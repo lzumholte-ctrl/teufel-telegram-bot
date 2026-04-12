@@ -1,16 +1,20 @@
 """
 Telegram-Bot fuer den Teufel-im-Detail-Agent.
 Empfaengt Nachrichten, analysiert durch die Enteignungsgenealogieals Linse,
-antwortet direkt in Telegram.
+antwortet direkt in Telegram. Gibt fertige Post-Bilder zurueck.
 
 Deploy: Railway, Render, oder lokal mit `python telegram_bot.py`
 Env-Vars: TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY
 """
 import os
+import io
 import logging
 import asyncio
+import textwrap
+import base64
 import anthropic
-from telegram import Update
+from PIL import Image, ImageDraw, ImageFont
+from telegram import Update, InputFile
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -21,6 +25,150 @@ from telegram.ext import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# --- Post-Bild-Generierung ---
+
+POST_WIDTH = 1080
+MARGIN_X = 90
+CONTENT_WIDTH = POST_WIDTH - 2 * MARGIN_X
+TITLE_TEXT = "DER TEUFEL STECKT IM DETAIL"
+FONTS_DIR = os.environ.get("FONTS_DIR", "/app/fonts")
+
+
+def _load_font(role: str, size: int) -> ImageFont.FreeTypeFont:
+    """Laedt Font mit Fallback. role = 'title' | 'body'."""
+    import glob
+
+    if role == "title":
+        candidates = glob.glob(os.path.join(FONTS_DIR, "instrument", "*egular*.ttf"))
+    else:
+        candidates = glob.glob(os.path.join(FONTS_DIR, "sourceserif", "*egular*.ttf"))
+        # Prefer the non-italic, non-display variant
+        candidates = [c for c in candidates if "Italic" not in c] or candidates
+
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+
+    # System fallback
+    for fallback in [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+    ]:
+        if os.path.exists(fallback):
+            try:
+                return ImageFont.truetype(fallback, size)
+            except Exception:
+                continue
+
+    return ImageFont.load_default(size)
+
+
+def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: ImageDraw.ImageDraw) -> list[str]:
+    """Bricht Text in Zeilen um die in max_width passen."""
+    words = text.split()
+    lines: list[str] = []
+    current: list[str] = []
+
+    for word in words:
+        test = " ".join(current + [word])
+        bbox = draw.textbbox((0, 0), test, font=font)
+        if bbox[2] - bbox[0] <= max_width:
+            current.append(word)
+        else:
+            if current:
+                lines.append(" ".join(current))
+            current = [word]
+
+    if current:
+        lines.append(" ".join(current))
+    return lines
+
+
+def generate_post_image(screenshot_bytes: bytes, take_text: str) -> bytes:
+    """Erzeugt ein Post-Bild: weiss, Serif, viel Luft, Screenshot eingebettet."""
+
+    screenshot = Image.open(io.BytesIO(screenshot_bytes)).convert("RGB")
+
+    # Screenshot skalieren
+    scale = CONTENT_WIDTH / screenshot.width
+    new_w = CONTENT_WIDTH
+    new_h = int(screenshot.height * scale)
+    if new_h > 900:
+        new_h = 900
+        scale = new_h / screenshot.height
+        new_w = int(screenshot.width * scale)
+    screenshot = screenshot.resize((new_w, new_h), Image.LANCZOS)
+
+    # Fonts
+    title_font = _load_font("title", 14)
+    body_font = _load_font("body", 27)
+
+    # Text umbrechen (auf temporaerem Canvas messen)
+    tmp = Image.new("RGB", (POST_WIDTH, 100), "white")
+    tmp_draw = ImageDraw.Draw(tmp)
+    body_lines = _wrap_text(take_text, body_font, CONTENT_WIDTH, tmp_draw)
+    line_height = 42
+
+    # Spacing
+    margin_top = 80
+    gap_title_img = 55
+    title_h = 22
+    gap_img_sep = 50
+    sep_h = 1
+    gap_sep_text = 45
+    margin_bottom = 80
+
+    body_h = len(body_lines) * line_height
+    total_h = (
+        margin_top + title_h + gap_title_img
+        + new_h + gap_img_sep + sep_h + gap_sep_text
+        + body_h + margin_bottom
+    )
+
+    # Canvas
+    img = Image.new("RGB", (POST_WIDTH, total_h), "#FFFFFF")
+    draw = ImageDraw.Draw(img)
+    y = margin_top
+
+    # --- Titel: getrackt, zentriert ---
+    tracking = 7
+    char_widths = []
+    for c in TITLE_TEXT:
+        bb = draw.textbbox((0, 0), c, font=title_font)
+        char_widths.append(bb[2] - bb[0])
+    title_total_w = sum(char_widths) + tracking * (len(TITLE_TEXT) - 1)
+    tx = (POST_WIDTH - title_total_w) // 2
+    for c, cw in zip(TITLE_TEXT, char_widths):
+        draw.text((tx, y), c, fill="#1a1a1a", font=title_font)
+        tx += cw + tracking
+
+    y += title_h + gap_title_img
+
+    # --- Screenshot ---
+    sx = (POST_WIDTH - new_w) // 2
+    img.paste(screenshot, (sx, y))
+    y += new_h + gap_img_sep
+
+    # --- Separator ---
+    sep_w = 60
+    sep_x = (POST_WIDTH - sep_w) // 2
+    draw.line([(sep_x, y), (sep_x + sep_w, y)], fill="#1a1a1a", width=1)
+    y += sep_h + gap_sep_text
+
+    # --- Take-Text ---
+    for line in body_lines:
+        draw.text((MARGIN_X, y), line, fill="#1a1a1a", font=body_font)
+        y += line_height
+
+    # Export
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf.getvalue()
+
 
 # --- Wissensdatenbank laden ---
 
@@ -224,8 +372,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Empfaengt ein Foto. Bei Alben (media_group) werden alle Bilder gesammelt
     und als EIN Prompt mit EINER Antwort verarbeitet."""
-    import base64
-
     # Foto herunterladen
     photo = update.message.photo[-1]  # Hoechste Aufloesung
     file = await context.bot.get_file(photo.file_id)
@@ -239,6 +385,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if media_group_id not in media_groups:
             media_groups[media_group_id] = {
                 "images": [],
+                "raw_images": [],
                 "caption": update.message.caption or "",
                 "chat_id": update.effective_chat.id,
                 "message": update.message,
@@ -251,6 +398,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ),
             )
         media_groups[media_group_id]["images"].append(img_b64)
+        media_groups[media_group_id]["raw_images"].append(bytes(file_bytes))
         # Caption nur uebernehmen wenn vorhanden (nur erstes Bild hat Caption)
         if update.message.caption and not media_groups[media_group_id]["caption"]:
             media_groups[media_group_id]["caption"] = update.message.caption
@@ -263,12 +411,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAULT_TYPE):
-    """Verarbeitet alle Bilder einer Media-Group als EINEN Prompt."""
+    """Verarbeitet alle Bilder einer Media-Group als EINEN Prompt.
+    Gibt ein Post-Bild zurueck (erstes Bild als Vorschau eingebettet)."""
     group = media_groups.pop(media_group_id, None)
     if not group:
         return
 
     images = group["images"]
+    raw_images = group["raw_images"]  # Original-Bytes fuer Bild-Generierung
     caption = group["caption"] or "Was siehst du in diesen Bildern?"
     message = group["message"]
 
@@ -281,7 +431,7 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
 
     # Alle Bilder + Text als ein Prompt
     msg_content = []
-    for i, img_b64 in enumerate(images):
+    for img_b64 in images:
         msg_content.append(
             {
                 "type": "image",
@@ -312,14 +462,23 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
     except Exception as e:
         logger.error(f"API-Fehler bei Media-Group: {e}")
         answer = f"Fehler bei der Analyse: {e}"
+        await message.reply_text(answer)
+        return
 
-    if len(answer) > 4096:
-        answer = answer[:4090] + " (...)"
-    await message.reply_text(answer)
+    # Post-Bild generieren (erstes Bild der Gruppe als Vorschau)
+    try:
+        post_img = generate_post_image(raw_images[0], answer)
+        await message.reply_photo(
+            photo=InputFile(io.BytesIO(post_img), filename="take.png"),
+            caption=answer[:1024] if len(answer) <= 1024 else answer[:1020] + "...",
+        )
+    except Exception as e:
+        logger.error(f"Bild-Generierung fehlgeschlagen: {e}")
+        await message.reply_text(answer)
 
 
 async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, img_b64: str):
-    """Verarbeitet ein einzelnes Foto."""
+    """Verarbeitet ein einzelnes Foto. Gibt ein Post-Bild zurueck."""
     await update.message.chat.send_action("typing")
 
     caption = update.message.caption or "Was siehst du hier?"
@@ -359,10 +518,22 @@ async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"API-Fehler: {e}")
         answer = f"Fehler bei der Analyse: {e}"
+        await update.message.reply_text(answer)
+        return
 
-    if len(answer) > 4096:
-        answer = answer[:4090] + " (...)"
-    await update.message.reply_text(answer)
+    # Post-Bild generieren
+    try:
+        raw_bytes = base64.b64decode(img_b64)
+        post_img = generate_post_image(raw_bytes, answer)
+        await update.message.reply_photo(
+            photo=InputFile(io.BytesIO(post_img), filename="take.png"),
+            caption=answer[:1024] if len(answer) <= 1024 else answer[:1020] + "...",
+        )
+    except Exception as e:
+        logger.error(f"Bild-Generierung fehlgeschlagen: {e}")
+        if len(answer) > 4096:
+            answer = answer[:4090] + " (...)"
+        await update.message.reply_text(answer)
 
 
 def main():
