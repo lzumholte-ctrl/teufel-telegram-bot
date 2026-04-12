@@ -6,14 +6,14 @@ antwortet direkt in Telegram. Gibt fertige Post-Bilder zurueck.
 Deploy: Railway, Render, oder lokal mit `python telegram_bot.py`
 Env-Vars: TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY
 """
-BOT_VERSION = "2026-04-12-v8"
+BOT_VERSION = "2026-04-13-v9"
 import os
 import io
 import logging
 import asyncio
 import base64
 import anthropic
-from telegram import Update
+from telegram import InputMediaPhoto, Update
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -37,8 +37,9 @@ logger = logging.getLogger(__name__)
 
 # --- Post-Bild-Generierung ---
 
-POST_WIDTH = 1350
-MARGIN_X = 100
+POST_WIDTH = 1080
+POST_HEIGHT = 1350  # 4:5 Instagram-Post-Format
+MARGIN_X = 90
 CONTENT_WIDTH = POST_WIDTH - 2 * MARGIN_X
 TITLE_TEXT = "DER TEUFEL STECKT IM DETAIL"
 
@@ -79,53 +80,8 @@ def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: Im
     return lines
 
 
-def generate_post_image(screenshot_bytes: bytes, take_text: str) -> bytes:
-    """Erzeugt ein Post-Bild: weiss, Serif, viel Luft, Screenshot eingebettet."""
-
-    screenshot = Image.open(io.BytesIO(screenshot_bytes)).convert("RGB")
-
-    # Screenshot skalieren — volle Breite nutzen, Hoehe großzuegig
-    scale = CONTENT_WIDTH / screenshot.width
-    new_w = CONTENT_WIDTH
-    new_h = int(screenshot.height * scale)
-    if new_h > 1400:
-        new_h = 1400
-        scale = new_h / screenshot.height
-        new_w = int(screenshot.width * scale)
-    screenshot = screenshot.resize((new_w, new_h), Image.LANCZOS)
-
-    # Fonts
-    title_font = _load_font("title", 22)
-    body_font = _load_font("body", 36)
-
-    # Text umbrechen (auf temporaerem Canvas messen)
-    tmp = Image.new("RGB", (POST_WIDTH, 100), "white")
-    tmp_draw = ImageDraw.Draw(tmp)
-    body_lines = _wrap_text(take_text, body_font, CONTENT_WIDTH, tmp_draw)
-    line_height = 54
-
-    # Spacing
-    margin_top = 110
-    gap_title_img = 80
-    title_h = 34
-    gap_img_sep = 70
-    sep_h = 1
-    gap_sep_text = 60
-    margin_bottom = 110
-
-    body_h = len(body_lines) * line_height
-    total_h = (
-        margin_top + title_h + gap_title_img
-        + new_h + gap_img_sep + sep_h + gap_sep_text
-        + body_h + margin_bottom
-    )
-
-    # Canvas
-    img = Image.new("RGB", (POST_WIDTH, total_h), "#FFFFFF")
-    draw = ImageDraw.Draw(img)
-    y = margin_top
-
-    # --- Titel: getrackt, zentriert ---
+def _draw_title(draw, y, title_font):
+    """Zeichnet den getrackten Titel zentriert. Gibt neue y-Position zurueck."""
     tracking = 7
     char_widths = []
     for c in TITLE_TEXT:
@@ -136,30 +92,84 @@ def generate_post_image(screenshot_bytes: bytes, take_text: str) -> bytes:
     for c, cw in zip(TITLE_TEXT, char_widths):
         draw.text((tx, y), c, fill="#1a1a1a", font=title_font)
         tx += cw + tracking
+    return y
 
-    y += title_h + gap_title_img
 
-    # --- Screenshot ---
-    sx = (POST_WIDTH - new_w) // 2
-    img.paste(screenshot, (sx, y))
-    y += new_h + gap_img_sep
-
-    # --- Separator ---
-    sep_w = 60
-    sep_x = (POST_WIDTH - sep_w) // 2
-    draw.line([(sep_x, y), (sep_x + sep_w, y)], fill="#1a1a1a", width=1)
-    y += sep_h + gap_sep_text
-
-    # --- Take-Text ---
-    for line in body_lines:
-        draw.text((MARGIN_X, y), line, fill="#1a1a1a", font=body_font)
-        y += line_height
-
-    # Export als JPEG (kleiner, Telegram-freundlich)
+def _export_jpeg(img):
+    """Exportiert Bild als JPEG bytes."""
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=92)
     buf.seek(0)
     return buf.getvalue()
+
+
+def generate_post_images(screenshot_bytes: bytes, take_text: str) -> list[bytes]:
+    """Erzeugt zwei Carousel-Slides (1080x1350, 4:5 Instagram-Post-Format).
+    Slide 1: Branding + Screenshot gross und lesbar.
+    Slide 2: Branding + Take-Text mit viel Luft.
+    Gibt Liste von JPEG-Bytes zurueck."""
+
+    title_font = _load_font("title", 20)
+    body_font = _load_font("body", 38)
+    margin_top = 100
+    title_h = 30
+
+    # ========== SLIDE 1: Screenshot ==========
+    screenshot = Image.open(io.BytesIO(screenshot_bytes)).convert("RGB")
+
+    # Screenshot so gross wie moeglich im verfuegbaren Bereich
+    img_area_top = margin_top + title_h + 70  # nach Titel + gap
+    img_area_bottom = POST_HEIGHT - 80  # Rand unten
+    max_img_h = img_area_bottom - img_area_top
+    max_img_w = CONTENT_WIDTH
+
+    scale_w = max_img_w / screenshot.width
+    scale_h = max_img_h / screenshot.height
+    scale = min(scale_w, scale_h)
+    new_w = int(screenshot.width * scale)
+    new_h = int(screenshot.height * scale)
+    screenshot = screenshot.resize((new_w, new_h), Image.LANCZOS)
+
+    slide1 = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
+    d1 = ImageDraw.Draw(slide1)
+
+    # Titel
+    _draw_title(d1, margin_top, title_font)
+
+    # Screenshot vertikal zentriert im verfuegbaren Bereich
+    img_y = img_area_top + (max_img_h - new_h) // 2
+    img_x = (POST_WIDTH - new_w) // 2
+    slide1.paste(screenshot, (img_x, img_y))
+
+    # ========== SLIDE 2: Take-Text ==========
+    slide2 = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
+    d2 = ImageDraw.Draw(slide2)
+
+    # Titel
+    _draw_title(d2, margin_top, title_font)
+
+    # Separator unter Titel
+    sep_y = margin_top + title_h + 50
+    sep_w = 60
+    sep_x = (POST_WIDTH - sep_w) // 2
+    d2.line([(sep_x, sep_y), (sep_x + sep_w, sep_y)], fill="#1a1a1a", width=1)
+
+    # Text umbrechen
+    body_lines = _wrap_text(take_text, body_font, CONTENT_WIDTH, d2)
+    line_height = 58
+
+    # Text vertikal zentriert im Bereich unter dem Separator
+    text_area_top = sep_y + 50
+    text_area_bottom = POST_HEIGHT - 80
+    text_block_h = len(body_lines) * line_height
+    text_y = text_area_top + (text_area_bottom - text_area_top - text_block_h) // 2
+    text_y = max(text_y, text_area_top)  # nicht ueber Separator rutschen
+
+    for line in body_lines:
+        d2.text((MARGIN_X, text_y), line, fill="#1a1a1a", font=body_font)
+        text_y += line_height
+
+    return [_export_jpeg(slide1), _export_jpeg(slide2)]
 
 
 # --- Wissensdatenbank laden ---
@@ -442,10 +452,13 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
     # Dann Post-Bild als Bonus
     if HAS_PILLOW:
         try:
-            post_img_bytes = generate_post_image(raw_images[0], answer)
-            photo_file = io.BytesIO(post_img_bytes)
-            photo_file.name = "take.jpg"
-            await message.reply_photo(photo=photo_file)
+            slides = generate_post_images(raw_images[0], answer)
+            media = []
+            for i, slide_bytes in enumerate(slides):
+                f = io.BytesIO(slide_bytes)
+                f.name = f"slide_{i}.jpg"
+                media.append(InputMediaPhoto(media=f))
+            await message.reply_media_group(media=media)
         except Exception as e:
             logger.error(f"Bild-Generierung fehlgeschlagen: {e}", exc_info=True)
             await message.reply_text(f"[DEBUG] Bild-Fehler: {type(e).__name__}: {e}")
@@ -506,10 +519,13 @@ async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TY
     if HAS_PILLOW:
         try:
             raw_bytes = base64.b64decode(img_b64)
-            post_img_bytes = generate_post_image(raw_bytes, answer)
-            photo_file = io.BytesIO(post_img_bytes)
-            photo_file.name = "take.jpg"
-            await update.message.reply_photo(photo=photo_file)
+            slides = generate_post_images(raw_bytes, answer)
+            media = []
+            for i, slide_bytes in enumerate(slides):
+                f = io.BytesIO(slide_bytes)
+                f.name = f"slide_{i}.jpg"
+                media.append(InputMediaPhoto(media=f))
+            await update.message.reply_media_group(media=media)
         except Exception as e:
             logger.error(f"Bild-Generierung fehlgeschlagen: {e}", exc_info=True)
             await update.message.reply_text(f"[DEBUG] Bild-Fehler: {type(e).__name__}: {e}")
