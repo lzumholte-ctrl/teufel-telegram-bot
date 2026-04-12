@@ -145,9 +145,9 @@ def generate_post_image(screenshot_bytes: bytes, take_text: str) -> bytes:
         draw.text((MARGIN_X, y), line, fill="#1a1a1a", font=body_font)
         y += line_height
 
-    # Export
+    # Export als JPEG (kleiner, Telegram-freundlich)
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    img.save(buf, format="JPEG", quality=92)
     buf.seek(0)
     return buf.getvalue()
 
@@ -418,13 +418,16 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
 
     # Post-Bild generieren (erstes Bild der Gruppe als Vorschau)
     try:
-        post_img = generate_post_image(raw_images[0], answer)
-        await message.reply_photo(
-            photo=post_img,
-            caption=answer[:1024] if len(answer) <= 1024 else answer[:1020] + "...",
-        )
+        logger.info(f"Generiere Post-Bild aus Media-Group ({len(raw_images[0])} Bytes)...")
+        post_img_bytes = generate_post_image(raw_images[0], answer)
+        logger.info(f"Post-Bild generiert: {len(post_img_bytes)} Bytes")
+        photo_file = io.BytesIO(post_img_bytes)
+        photo_file.name = "take.jpg"
+        caption_text = answer[:1024] if len(answer) <= 1024 else answer[:1020] + "..."
+        await message.reply_photo(photo=photo_file, caption=caption_text)
+        logger.info("Post-Bild gesendet")
     except Exception as e:
-        logger.error(f"Bild-Generierung fehlgeschlagen: {e}")
+        logger.error(f"Bild-Generierung fehlgeschlagen: {e}", exc_info=True)
         await message.reply_text(answer)
 
 
@@ -475,13 +478,16 @@ async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TY
     # Post-Bild generieren
     try:
         raw_bytes = base64.b64decode(img_b64)
-        post_img = generate_post_image(raw_bytes, answer)
-        await update.message.reply_photo(
-            photo=post_img,
-            caption=answer[:1024] if len(answer) <= 1024 else answer[:1020] + "...",
-        )
+        logger.info(f"Generiere Post-Bild aus {len(raw_bytes)} Bytes Screenshot...")
+        post_img_bytes = generate_post_image(raw_bytes, answer)
+        logger.info(f"Post-Bild generiert: {len(post_img_bytes)} Bytes")
+        photo_file = io.BytesIO(post_img_bytes)
+        photo_file.name = "take.jpg"
+        caption_text = answer[:1024] if len(answer) <= 1024 else answer[:1020] + "..."
+        await update.message.reply_photo(photo=photo_file, caption=caption_text)
+        logger.info("Post-Bild gesendet")
     except Exception as e:
-        logger.error(f"Bild-Generierung fehlgeschlagen: {e}")
+        logger.error(f"Bild-Generierung fehlgeschlagen: {e}", exc_info=True)
         if len(answer) > 4096:
             answer = answer[:4090] + " (...)"
         await update.message.reply_text(answer)
