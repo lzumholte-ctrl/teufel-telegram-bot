@@ -95,23 +95,23 @@ def generate_post_image(screenshot_bytes: bytes, take_text: str) -> bytes:
     screenshot = screenshot.resize((new_w, new_h), Image.LANCZOS)
 
     # Fonts
-    title_font = _load_font("title", 14)
-    body_font = _load_font("body", 27)
+    title_font = _load_font("title", 18)
+    body_font = _load_font("body", 32)
 
     # Text umbrechen (auf temporaerem Canvas messen)
     tmp = Image.new("RGB", (POST_WIDTH, 100), "white")
     tmp_draw = ImageDraw.Draw(tmp)
     body_lines = _wrap_text(take_text, body_font, CONTENT_WIDTH, tmp_draw)
-    line_height = 42
+    line_height = 50
 
     # Spacing
-    margin_top = 80
-    gap_title_img = 55
-    title_h = 22
-    gap_img_sep = 50
+    margin_top = 100
+    gap_title_img = 70
+    title_h = 28
+    gap_img_sep = 65
     sep_h = 1
-    gap_sep_text = 45
-    margin_bottom = 80
+    gap_sep_text = 55
+    margin_bottom = 100
 
     body_h = len(body_lines) * line_height
     total_h = (
