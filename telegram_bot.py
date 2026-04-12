@@ -10,11 +10,19 @@ import os
 import io
 import logging
 import asyncio
-import textwrap
 import base64
 import anthropic
-from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    HAS_PILLOW = True
+    logger_init = logging.getLogger(__name__)
+    logger_init.info("Pillow geladen — Bildgenerierung aktiv")
+except ImportError:
+    HAS_PILLOW = False
+    logger_init = logging.getLogger(__name__)
+    logger_init.warning("Pillow nicht verfuegbar — nur Text-Antworten")
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -416,19 +424,23 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
         await message.reply_text(answer)
         return
 
-    # Post-Bild generieren (erstes Bild der Gruppe als Vorschau)
-    try:
-        logger.info(f"Generiere Post-Bild aus Media-Group ({len(raw_images[0])} Bytes)...")
-        post_img_bytes = generate_post_image(raw_images[0], answer)
-        logger.info(f"Post-Bild generiert: {len(post_img_bytes)} Bytes")
-        photo_file = io.BytesIO(post_img_bytes)
-        photo_file.name = "take.jpg"
-        caption_text = answer[:1024] if len(answer) <= 1024 else answer[:1020] + "..."
-        await message.reply_photo(photo=photo_file, caption=caption_text)
-        logger.info("Post-Bild gesendet")
-    except Exception as e:
-        logger.error(f"Bild-Generierung fehlgeschlagen: {e}", exc_info=True)
-        await message.reply_text(answer)
+    # Immer erst Text schicken
+    if len(answer) > 4096:
+        answer = answer[:4090] + " (...)"
+    await message.reply_text(answer)
+
+    # Dann Post-Bild als Bonus
+    if HAS_PILLOW:
+        try:
+            post_img_bytes = generate_post_image(raw_images[0], answer)
+            photo_file = io.BytesIO(post_img_bytes)
+            photo_file.name = "take.jpg"
+            await message.reply_photo(photo=photo_file)
+        except Exception as e:
+            logger.error(f"Bild-Generierung fehlgeschlagen: {e}", exc_info=True)
+            await message.reply_text(f"[DEBUG] Bild-Fehler: {type(e).__name__}: {e}")
+    else:
+        await message.reply_text("[DEBUG] Pillow nicht installiert — kein Bild moeglich")
 
 
 async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, img_b64: str):
@@ -475,22 +487,24 @@ async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(answer)
         return
 
-    # Post-Bild generieren
-    try:
-        raw_bytes = base64.b64decode(img_b64)
-        logger.info(f"Generiere Post-Bild aus {len(raw_bytes)} Bytes Screenshot...")
-        post_img_bytes = generate_post_image(raw_bytes, answer)
-        logger.info(f"Post-Bild generiert: {len(post_img_bytes)} Bytes")
-        photo_file = io.BytesIO(post_img_bytes)
-        photo_file.name = "take.jpg"
-        caption_text = answer[:1024] if len(answer) <= 1024 else answer[:1020] + "..."
-        await update.message.reply_photo(photo=photo_file, caption=caption_text)
-        logger.info("Post-Bild gesendet")
-    except Exception as e:
-        logger.error(f"Bild-Generierung fehlgeschlagen: {e}", exc_info=True)
-        if len(answer) > 4096:
-            answer = answer[:4090] + " (...)"
-        await update.message.reply_text(answer)
+    # Immer erst Text schicken
+    if len(answer) > 4096:
+        answer = answer[:4090] + " (...)"
+    await update.message.reply_text(answer)
+
+    # Dann Post-Bild als Bonus (wenn Pillow da)
+    if HAS_PILLOW:
+        try:
+            raw_bytes = base64.b64decode(img_b64)
+            post_img_bytes = generate_post_image(raw_bytes, answer)
+            photo_file = io.BytesIO(post_img_bytes)
+            photo_file.name = "take.jpg"
+            await update.message.reply_photo(photo=photo_file)
+        except Exception as e:
+            logger.error(f"Bild-Generierung fehlgeschlagen: {e}", exc_info=True)
+            await update.message.reply_text(f"[DEBUG] Bild-Fehler: {type(e).__name__}: {e}")
+    else:
+        await update.message.reply_text("[DEBUG] Pillow nicht installiert — kein Bild moeglich")
 
 
 def main():
