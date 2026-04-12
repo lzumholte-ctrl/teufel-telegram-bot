@@ -114,7 +114,12 @@ ZITIEREN:
 - Wenn du aus dem Kontext zitierst, sei praezise. Wenn du etwas aus dem allgemeinen Training weisst statt aus den mitgeschickten Quellen, kennzeichne das: "Soweit ich weiss..." oder "Aus dem Gedaechtnis, nicht aus der Primaerquelle verifiziert."
 - ERFINDE KEINE ZITATE. Wenn du die genaue Formulierung nicht im Kontext findest, paraphrasiere und sag das.
 
-LAENGE: So lang wie noetig, so kurz wie moeglich. Manchmal sind es drei Saetze. Manchmal ein laengerer Absatz. Orientier dich daran, wie viel das Phaenomen hergibt — nicht an einer Ziellaenge."""
+LAENGE — DAS IST NICHT OPTIONAL:
+- Du schreibst fuer Telegram. EINE Nachricht. Maximal 3000 Zeichen. Das ist hart.
+- Beilaeufige Frage = 3-5 Saetze. Tiefe Frage = maximal 3 kurze Absaetze.
+- Lieber ein scharfer Gedanke als fuenf halbgare.
+- Keine Aufzaehlungen, keine Listen, kein "erstens... zweitens... drittens".
+- Wenn du merkst dass du ueber 3 Absaetze gehst: STOPP. Streich die Haelfte. Der beste Satz bleibt."""
 
 
 # --- Konversations-Speicher pro User ---
@@ -186,7 +191,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=4096,
+            max_tokens=1500,
             system=SYSTEM_PROMPT,
             messages=messages,
         )
@@ -195,16 +200,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"API-Fehler: {e}")
         answer = f"Fehler bei der Analyse: {e}"
 
-    # Telegram hat ein 4096-Zeichen-Limit pro Nachricht
-    if len(answer) <= 4096:
-        await update.message.reply_text(answer)
-    else:
-        # In Teile aufsplitten
-        for i in range(0, len(answer), 4096):
-            chunk = answer[i : i + 4096]
-            await update.message.reply_text(chunk)
-            if i + 4096 < len(answer):
-                await asyncio.sleep(0.5)
+    # EINE Nachricht. Wenn zu lang, kuerzen statt splitten.
+    if len(answer) > 4096:
+        answer = answer[:4090] + " (...)"
+    await update.message.reply_text(answer)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -237,7 +236,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=4096,
+            max_tokens=1500,
             system=SYSTEM_PROMPT,
             messages=messages,
         )
@@ -246,12 +245,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"API-Fehler: {e}")
         answer = f"Fehler bei der Analyse: {e}"
 
-    if len(answer) <= 4096:
-        await update.message.reply_text(answer)
-    else:
-        for i in range(0, len(answer), 4096):
-            await update.message.reply_text(answer[i : i + 4096])
-            if i + 4096 < len(answer):
+    if len(answer) > 4096:
+        answer = answer[:4090] + " (...)"
+    await update.message.reply_text(answer)
                 await asyncio.sleep(0.5)
 
 
