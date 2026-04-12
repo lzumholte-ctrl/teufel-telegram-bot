@@ -314,6 +314,43 @@ async def quellen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
+import re
+
+PROOFREAD_PROMPT = (
+    "Du bist ein Lektor. Korrigiere den folgenden Text auf korrektes Deutsch "
+    "(Grammatik, Rechtschreibung, Zeichensetzung). Aendere NICHTS am Inhalt, "
+    "am Stil, an der Wortwahl oder an der Laenge. Gib NUR den korrigierten Text "
+    "zurueck, ohne Erklaerungen oder Kommentare."
+)
+
+
+def _strip_dashes(text: str) -> str:
+    """Entfernt Em-Dashes und En-Dashes, ersetzt sie kontextabhaengig."""
+    # " — " oder " – " (mit Leerzeichen) -> Komma oder Punkt
+    text = re.sub(r'\s*[—–]\s*', ', ', text)
+    # Doppelte Kommas bereinigen
+    text = re.sub(r',\s*,', ',', text)
+    # Komma vor Punkt bereinigen
+    text = re.sub(r',\s*\.', '.', text)
+    return text.strip()
+
+
+async def _proofread(text: str, client: anthropic.Anthropic) -> str:
+    """Laesst den Text auf korrektes Deutsch pruefen. Gibt korrigierten Text zurueck."""
+    cleaned = _strip_dashes(text)
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=600,
+            system=PROOFREAD_PROMPT,
+            messages=[{"role": "user", "content": cleaned}],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        logger.error(f"Proofread-Fehler: {e}")
+        return cleaned  # Im Fehlerfall: wenigstens Dashes entfernt
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Empfaengt eine Nachricht und antwortet mit Analyse."""
     user_id = update.effective_user.id
@@ -352,6 +389,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages=messages,
         )
         answer = response.content[0].text
+        answer = await _proofread(answer, client)
     except Exception as e:
         logger.error(f"API-Fehler: {e}")
         answer = f"Fehler bei der Analyse: {e}"
@@ -425,6 +463,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages=messages,
         )
         answer = response.content[0].text
+        answer = await _proofread(answer, client)
     except Exception as e:
         logger.error(f"API-Fehler: {e}")
         answer = f"Fehler bei der Analyse: {e}"
@@ -524,6 +563,7 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
             messages=messages,
         )
         answer = response.content[0].text
+        answer = await _proofread(answer, client)
     except Exception as e:
         logger.error(f"API-Fehler bei Media-Group: {e}")
         answer = f"Fehler bei der Analyse: {e}"
@@ -590,6 +630,7 @@ async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TY
             messages=messages,
         )
         answer = response.content[0].text
+        answer = await _proofread(answer, client)
     except Exception as e:
         logger.error(f"API-Fehler: {e}")
         answer = f"Fehler bei der Analyse: {e}"
