@@ -142,35 +142,48 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str) -> list[bytes]
     img_x = (POST_WIDTH - new_w) // 2
     slide1.paste(screenshot, (img_x, img_y))
 
-    # ========== SLIDE 2: Take-Text ==========
-    slide2 = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
-    d2 = ImageDraw.Draw(slide2)
-
-    # Titel
-    _draw_title(d2, margin_top, title_font)
-
-    # Separator unter Titel
-    sep_y = margin_top + title_h + 50
-    sep_w = 60
-    sep_x = (POST_WIDTH - sep_w) // 2
-    d2.line([(sep_x, sep_y), (sep_x + sep_w, sep_y)], fill="#1a1a1a", width=1)
-
-    # Text umbrechen
-    body_lines = _wrap_text(take_text, body_font, CONTENT_WIDTH, d2)
+    # ========== TEXT-SLIDES: so viele wie noetig ==========
+    tmp_img = Image.new("RGB", (POST_WIDTH, 100), "white")
+    tmp_draw = ImageDraw.Draw(tmp_img)
+    body_lines = _wrap_text(take_text, body_font, CONTENT_WIDTH, tmp_draw)
     line_height = 58
 
-    # Text vertikal zentriert im Bereich unter dem Separator
+    # Wie viele Zeilen passen pro Slide?
+    sep_y = margin_top + title_h + 50
     text_area_top = sep_y + 50
     text_area_bottom = POST_HEIGHT - 80
-    text_block_h = len(body_lines) * line_height
-    text_y = text_area_top + (text_area_bottom - text_area_top - text_block_h) // 2
-    text_y = max(text_y, text_area_top)  # nicht ueber Separator rutschen
+    lines_per_slide = max(1, (text_area_bottom - text_area_top) // line_height)
 
-    for line in body_lines:
-        d2.text((MARGIN_X, text_y), line, fill="#1a1a1a", font=body_font)
-        text_y += line_height
+    # Zeilen auf Slides verteilen
+    text_slides_data = []
+    for i in range(0, len(body_lines), lines_per_slide):
+        text_slides_data.append(body_lines[i : i + lines_per_slide])
 
-    return [_export_jpeg(slide1), _export_jpeg(slide2)]
+    text_slides = []
+    for chunk in text_slides_data:
+        slide = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
+        d = ImageDraw.Draw(slide)
+
+        # Titel
+        _draw_title(d, margin_top, title_font)
+
+        # Separator
+        sep_w = 60
+        sep_x = (POST_WIDTH - sep_w) // 2
+        d.line([(sep_x, sep_y), (sep_x + sep_w, sep_y)], fill="#1a1a1a", width=1)
+
+        # Text vertikal zentriert
+        block_h = len(chunk) * line_height
+        text_y = text_area_top + (text_area_bottom - text_area_top - block_h) // 2
+        text_y = max(text_y, text_area_top)
+
+        for line in chunk:
+            d.text((MARGIN_X, text_y), line, fill="#1a1a1a", font=body_font)
+            text_y += line_height
+
+        text_slides.append(_export_jpeg(slide))
+
+    return [_export_jpeg(slide1)] + text_slides
 
 
 # --- Wissensdatenbank laden ---
