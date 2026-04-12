@@ -6,6 +6,7 @@ antwortet direkt in Telegram. Gibt fertige Post-Bilder zurueck.
 Deploy: Railway, Render, oder lokal mit `python telegram_bot.py`
 Env-Vars: TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY
 """
+BOT_VERSION = "2026-04-12-v8"
 import os
 import io
 import logging
@@ -269,6 +270,14 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Konversation zurueckgesetzt.")
 
 
+async def version(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"Version: {BOT_VERSION}\n"
+        f"Pillow: {'ja' if HAS_PILLOW else 'NEIN'}\n"
+        f"Python: {os.sys.version.split()[0]}"
+    )
+
+
 async def quellen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = context.bot_data.get("kb", {})
     count = len(kb)
@@ -530,6 +539,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("quellen", quellen))
+    app.add_handler(CommandHandler("version", version))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
