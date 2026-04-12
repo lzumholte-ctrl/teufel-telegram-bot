@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 
 # --- Post-Bild-Generierung ---
 
-POST_WIDTH = 1080
-MARGIN_X = 90
+POST_WIDTH = 1350
+MARGIN_X = 100
 CONTENT_WIDTH = POST_WIDTH - 2 * MARGIN_X
 TITLE_TEXT = "DER TEUFEL STECKT IM DETAIL"
 
@@ -84,34 +84,34 @@ def generate_post_image(screenshot_bytes: bytes, take_text: str) -> bytes:
 
     screenshot = Image.open(io.BytesIO(screenshot_bytes)).convert("RGB")
 
-    # Screenshot skalieren
+    # Screenshot skalieren — volle Breite nutzen, Hoehe großzuegig
     scale = CONTENT_WIDTH / screenshot.width
     new_w = CONTENT_WIDTH
     new_h = int(screenshot.height * scale)
-    if new_h > 900:
-        new_h = 900
+    if new_h > 1400:
+        new_h = 1400
         scale = new_h / screenshot.height
         new_w = int(screenshot.width * scale)
     screenshot = screenshot.resize((new_w, new_h), Image.LANCZOS)
 
     # Fonts
-    title_font = _load_font("title", 18)
-    body_font = _load_font("body", 32)
+    title_font = _load_font("title", 22)
+    body_font = _load_font("body", 36)
 
     # Text umbrechen (auf temporaerem Canvas messen)
     tmp = Image.new("RGB", (POST_WIDTH, 100), "white")
     tmp_draw = ImageDraw.Draw(tmp)
     body_lines = _wrap_text(take_text, body_font, CONTENT_WIDTH, tmp_draw)
-    line_height = 50
+    line_height = 54
 
     # Spacing
-    margin_top = 100
-    gap_title_img = 70
-    title_h = 28
-    gap_img_sep = 65
+    margin_top = 110
+    gap_title_img = 80
+    title_h = 34
+    gap_img_sep = 70
     sep_h = 1
-    gap_sep_text = 55
-    margin_bottom = 100
+    gap_sep_text = 60
+    margin_bottom = 110
 
     body_h = len(body_lines) * line_height
     total_h = (
