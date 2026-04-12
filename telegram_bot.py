@@ -135,10 +135,12 @@ Gut: "Das ist kein Bild, das ist die statistische Mitte von allem was je geposte
 Lilly weiss was sie tut. Sie braucht den Satz, auf den sie selbst noch nicht gekommen ist."""
 
 
-# --- Konversations-Speicher pro User ---
+# --- Media-Group-Sammler ---
+# Wenn mehrere Fotos als Album kommen, haben sie dieselbe media_group_id.
+# Wir sammeln sie und antworten nur einmal.
 
-conversations: dict[int, list[dict]] = {}
-MAX_HISTORY = 10
+media_groups: dict[str, dict] = {}  # media_group_id -> {images: [], caption: str, chat_id: int, message: Update.message}
+MEDIA_GROUP_WAIT = 2.0  # Sekunden warten bis alle Bilder einer Gruppe da sind
 
 
 # --- Bot-Handler ---
@@ -220,21 +222,109 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Empfaengt ein Foto und analysiert es."""
-    await update.message.chat.send_action("typing")
+    """Empfaengt ein Foto. Bei Alben (media_group) werden alle Bilder gesammelt
+    und als EIN Prompt mit EINER Antwort verarbeitet."""
+    import base64
 
     # Foto herunterladen
     photo = update.message.photo[-1]  # Hoechste Aufloesung
     file = await context.bot.get_file(photo.file_id)
     file_bytes = await file.download_as_bytearray()
-
-    import base64
-
     img_b64 = base64.b64encode(bytes(file_bytes)).decode("utf-8")
+
+    media_group_id = update.message.media_group_id
+
+    if media_group_id:
+        # Teil eines Albums — sammeln
+        if media_group_id not in media_groups:
+            media_groups[media_group_id] = {
+                "images": [],
+                "caption": update.message.caption or "",
+                "chat_id": update.effective_chat.id,
+                "message": update.message,
+            }
+            # Timer starten: nach MEDIA_GROUP_WAIT alle gesammelten Bilder verarbeiten
+            asyncio.get_event_loop().call_later(
+                MEDIA_GROUP_WAIT,
+                lambda mgid=media_group_id: asyncio.ensure_future(
+                    _process_media_group(mgid, context)
+                ),
+            )
+        media_groups[media_group_id]["images"].append(img_b64)
+        # Caption nur uebernehmen wenn vorhanden (nur erstes Bild hat Caption)
+        if update.message.caption and not media_groups[media_group_id]["caption"]:
+            media_groups[media_group_id]["caption"] = update.message.caption
+        logger.info(
+            f"Media-Group {media_group_id}: Bild {len(media_groups[media_group_id]['images'])} gesammelt"
+        )
+    else:
+        # Einzelnes Foto — direkt verarbeiten
+        await _process_single_photo(update, context, img_b64)
+
+
+async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAULT_TYPE):
+    """Verarbeitet alle Bilder einer Media-Group als EINEN Prompt."""
+    group = media_groups.pop(media_group_id, None)
+    if not group:
+        return
+
+    images = group["images"]
+    caption = group["caption"] or "Was siehst du in diesen Bildern?"
+    message = group["message"]
+
+    logger.info(f"Media-Group {media_group_id}: {len(images)} Bilder verarbeiten")
+    await message.chat.send_action("typing")
+
+    # Wissensdatenbank durchsuchen
+    kb = context.bot_data.get("kb", {})
+    kb_context = search_kb(kb, caption) if caption != "Was siehst du in diesen Bildern?" else ""
+
+    # Alle Bilder + Text als ein Prompt
+    msg_content = []
+    for i, img_b64 in enumerate(images):
+        msg_content.append(
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64},
+            }
+        )
+
+    text_prompt = f"{caption}\n\n(Das sind {len(images)} Slides/Bilder aus einem Post. Lies sie als Einheit und gib EINEN Take.)"
+    if kb_context:
+        text_prompt += (
+            f"\n\n--- WISSENSDATENBANK (zitiere daraus, wenn relevant) ---\n"
+            f"{kb_context}\n"
+            f"--- ENDE WISSENSDATENBANK ---"
+        )
+    msg_content.append({"type": "text", "text": text_prompt})
+
+    messages = [{"role": "user", "content": msg_content}]
+
+    client: anthropic.Anthropic = context.bot_data["client"]
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            system=SYSTEM_PROMPT,
+            messages=messages,
+        )
+        answer = response.content[0].text
+    except Exception as e:
+        logger.error(f"API-Fehler bei Media-Group: {e}")
+        answer = f"Fehler bei der Analyse: {e}"
+
+    if len(answer) > 4096:
+        answer = answer[:4090] + " (...)"
+    await message.reply_text(answer)
+
+
+async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, img_b64: str):
+    """Verarbeitet ein einzelnes Foto."""
+    await update.message.chat.send_action("typing")
 
     caption = update.message.caption or "Was siehst du hier?"
 
-    # Wissensdatenbank durchsuchen mit Caption
+    # Wissensdatenbank durchsuchen
     kb = context.bot_data.get("kb", {})
     kb_context = search_kb(kb, caption) if caption != "Was siehst du hier?" else ""
 
@@ -255,7 +345,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"type": "text", "text": text_prompt},
     ]
 
-    # Frische Anfrage, kein Konversations-Stack
     messages = [{"role": "user", "content": msg_content}]
 
     client: anthropic.Anthropic = context.bot_data["client"]
