@@ -13,6 +13,7 @@ import logging
 import asyncio
 import base64
 import anthropic
+import openai
 from telegram import InputMediaPhoto, Update
 
 try:
@@ -348,6 +349,78 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(answer)
 
 
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Empfaengt eine Sprachnachricht, transkribiert sie und verarbeitet als Text."""
+    oai_client = context.bot_data.get("openai_client")
+    if not oai_client:
+        await update.message.reply_text(
+            "Sprachnachrichten brauchen einen OPENAI_API_KEY fuer Whisper. "
+            "Bitte als Env-Var setzen."
+        )
+        return
+
+    await update.message.chat.send_action("typing")
+
+    # Voice-Datei herunterladen (Telegram sendet .oga/ogg)
+    voice = update.message.voice
+    file = await context.bot.get_file(voice.file_id)
+    file_bytes = await file.download_as_bytearray()
+
+    # Whisper Transkription
+    try:
+        audio_file = io.BytesIO(bytes(file_bytes))
+        audio_file.name = "voice.ogg"
+        transcript = oai_client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            language="de",
+        )
+        text = transcript.text.strip()
+    except Exception as e:
+        logger.error(f"Whisper-Fehler: {e}")
+        await update.message.reply_text(f"Konnte Sprachnachricht nicht verstehen: {e}")
+        return
+
+    if not text:
+        await update.message.reply_text("Konnte nichts verstehen — versuch nochmal?")
+        return
+
+    logger.info(f"Voice transkribiert: {text[:100]}...")
+
+    # Ab hier wie handle_message
+    kb = context.bot_data.get("kb", {})
+    kb_context = search_kb(kb, text)
+
+    user_content = text
+    if kb_context:
+        user_content = (
+            f"{text}\n\n"
+            f"--- WISSENSDATENBANK (zitiere daraus, wenn relevant) ---\n"
+            f"{kb_context}\n"
+            f"--- ENDE WISSENSDATENBANK ---\n\n"
+            f"Schreib deinen Text. Zitiere praezise aus den Quellen oben wenn du sie benutzt."
+        )
+
+    messages = [{"role": "user", "content": user_content}]
+
+    client: anthropic.Anthropic = context.bot_data["client"]
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            system=SYSTEM_PROMPT,
+            messages=messages,
+        )
+        answer = response.content[0].text
+    except Exception as e:
+        logger.error(f"API-Fehler: {e}")
+        answer = f"Fehler bei der Analyse: {e}"
+
+    if len(answer) > 4096:
+        answer = answer[:4090] + " (...)"
+    await update.message.reply_text(answer)
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Empfaengt ein Foto. Bei Alben (media_group) werden alle Bilder gesammelt
     und als EIN Prompt mit EINER Antwort verarbeitet."""
@@ -552,12 +625,21 @@ def main():
     app.bot_data["client"] = anthropic.Anthropic(api_key=anthropic_key)
     app.bot_data["kb"] = kb
 
+    # OpenAI fuer Whisper (optional — Voice funktioniert nur damit)
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if openai_key:
+        app.bot_data["openai_client"] = openai.OpenAI(api_key=openai_key)
+        logger.info("OpenAI Whisper aktiv — Sprachnachrichten verfuegbar")
+    else:
+        logger.warning("OPENAI_API_KEY nicht gesetzt — Sprachnachrichten deaktiviert")
+
     # Handler
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("quellen", quellen))
     app.add_handler(CommandHandler("version", version))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot gestartet. Warte auf Nachrichten...")

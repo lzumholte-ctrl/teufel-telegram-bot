@@ -1,5 +1,6 @@
-# teufel-bot v8
+# teufel-bot v9
 anthropic>=0.40.0
+openai>=1.0.0
 fastapi>=0.115.0
 uvicorn>=0.30.0
 python-dotenv>=1.0.0
