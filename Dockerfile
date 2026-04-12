@@ -2,11 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Fonts: DejaVu Serif (zuverlaessig in Debian verfuegbar)
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends fonts-dejavu-core \
-    && rm -rf /var/lib/apt/lists/*
-
+# Cache-bust: v8
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

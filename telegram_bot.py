@@ -42,19 +42,20 @@ MARGIN_X = 90
 CONTENT_WIDTH = POST_WIDTH - 2 * MARGIN_X
 TITLE_TEXT = "DER TEUFEL STECKT IM DETAIL"
 
-# Font-Pfade (DejaVu Serif, via apt installiert)
-FONT_SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
-FONT_SERIF_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
-
-
 def _load_font(role: str, size: int) -> ImageFont.FreeTypeFont:
-    """Laedt DejaVu Serif Font."""
-    path = FONT_SERIF_BOLD if role == "title" else FONT_SERIF
-    try:
-        return ImageFont.truetype(path, size)
-    except Exception:
-        logger.warning(f"Font nicht gefunden: {path}, nutze Default")
-        return ImageFont.load_default()
+    """Laedt einen Serif-Font. Probiert System-Fonts, dann Pillow-Default."""
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf" if role == "title"
+        else "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    logger.warning("Kein System-Font gefunden, nutze Pillow-Default")
+    return ImageFont.load_default()
 
 
 def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: ImageDraw.ImageDraw) -> list[str]:

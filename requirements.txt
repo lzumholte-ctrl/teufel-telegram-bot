@@ -1,3 +1,4 @@
+# teufel-bot v8
 anthropic>=0.40.0
 fastapi>=0.115.0
 uvicorn>=0.30.0
