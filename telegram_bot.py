@@ -14,7 +14,7 @@ import textwrap
 import base64
 import anthropic
 from PIL import Image, ImageDraw, ImageFont
-from telegram import Update, InputFile
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -32,38 +32,20 @@ POST_WIDTH = 1080
 MARGIN_X = 90
 CONTENT_WIDTH = POST_WIDTH - 2 * MARGIN_X
 TITLE_TEXT = "DER TEUFEL STECKT IM DETAIL"
-FONTS_DIR = os.environ.get("FONTS_DIR", "/app/fonts")
+
+# Font-Pfade (DejaVu Serif, via apt installiert)
+FONT_SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+FONT_SERIF_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
 
 
 def _load_font(role: str, size: int) -> ImageFont.FreeTypeFont:
-    """Laedt Font mit Fallback. role = 'title' | 'body'."""
-    import glob
-
-    if role == "title":
-        candidates = glob.glob(os.path.join(FONTS_DIR, "instrument", "*egular*.ttf"))
-    else:
-        candidates = glob.glob(os.path.join(FONTS_DIR, "sourceserif", "*egular*.ttf"))
-        # Prefer the non-italic, non-display variant
-        candidates = [c for c in candidates if "Italic" not in c] or candidates
-
-    for path in candidates:
-        try:
-            return ImageFont.truetype(path, size)
-        except Exception:
-            continue
-
-    # System fallback
-    for fallback in [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
-    ]:
-        if os.path.exists(fallback):
-            try:
-                return ImageFont.truetype(fallback, size)
-            except Exception:
-                continue
-
-    return ImageFont.load_default(size)
+    """Laedt DejaVu Serif Font."""
+    path = FONT_SERIF_BOLD if role == "title" else FONT_SERIF
+    try:
+        return ImageFont.truetype(path, size)
+    except Exception:
+        logger.warning(f"Font nicht gefunden: {path}, nutze Default")
+        return ImageFont.load_default()
 
 
 def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: ImageDraw.ImageDraw) -> list[str]:
@@ -438,7 +420,7 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
     try:
         post_img = generate_post_image(raw_images[0], answer)
         await message.reply_photo(
-            photo=InputFile(io.BytesIO(post_img), filename="take.png"),
+            photo=post_img,
             caption=answer[:1024] if len(answer) <= 1024 else answer[:1020] + "...",
         )
     except Exception as e:
@@ -495,7 +477,7 @@ async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TY
         raw_bytes = base64.b64decode(img_b64)
         post_img = generate_post_image(raw_bytes, answer)
         await update.message.reply_photo(
-            photo=InputFile(io.BytesIO(post_img), filename="take.png"),
+            photo=post_img,
             caption=answer[:1024] if len(answer) <= 1024 else answer[:1020] + "...",
         )
     except Exception as e:
