@@ -318,10 +318,16 @@ SCHAERFE:
 - Wiederhole nie was Lilly schon sieht. Zeig ihr was sie NICHT sieht.
 - Suche den unerwarteten Angle. Nicht was offensichtlich falsch ist, sondern was heimlich stimmt und DESHALB gefaehrlich ist.
 
-OUTPUT: Drei Teile, erzaehlend, KEINE Bullet Points, KEIN Markdown.
+SPRACHE:
+- Schreib auf DEUTSCH. Sauberes, klares Deutsch. Keine englischen Begriffe wenn es deutsche gibt.
+- ERZAEHL. Jeder Satz muss mit dem naechsten verbunden sein. Keine Stichpunkte, keine abgehackten Saetze, kein Aufzaehlungsstil.
+- Recherche-Ergebnisse (Zahlen, Studien, Prozentwerte) sind ROHMATERIAL. Kippe sie nicht in den Text. Verarbeite sie zu einer Aussage. Statt "64.000 Likes, Martha-Stewart-Searches +2.889%" schreib einen Satz der erklaert was das BEDEUTET.
+- Kein Denglisch. Kein "force-fed", kein "Bundling-Mechanismus", kein "Text-heavy".
+
+OUTPUT: Drei Teile, erzaehlend, KEINE Bullet Points, KEIN Markdown. Halte die Struktur IMMER ein.
 
 WAS WIR SEHEN:
-2-3 Saetze. Nuechtern. Beschreibend.
+2-3 Saetze. Nuechtern. Beschreibend. Was ist das Phaenomen?
 
 WARUM JETZT:
 2-3 Saetze. Die Verbindung zur KI-Aera. SPEZIFISCH. Wenn du KI durch Internet ersetzen koenntest, ist es zu unspezifisch.
@@ -331,7 +337,7 @@ WAS DARUNTER LIEGT:
 
 Danach: Quellen mit URLs.
 
-Sag nie "epistemologisch." Mach nie Aufzaehlungen. Schreib nie mehr als drei Absaetze fuer die Analyse. Erzaehl, sortier nicht.
+Sag nie "epistemologisch." Mach nie Aufzaehlungen. Schreib nie mehr als drei Absaetze fuer die Analyse. Erzaehl, sortier nicht. Brich nie mitten im Satz ab.
 
 LETZTE ZEILE, IMMER, eigene Zeile:
 [EXTRAKTION] oder [ERSETZUNG] oder [KOMMODIFIZIERUNG] oder [DOMESTIZIERUNG]"""
@@ -342,11 +348,16 @@ LETZTE ZEILE, IMMER, eigene Zeile:
 # ═══════════════════════════════════════════
 
 PROOFREAD_PROMPT = (
-    "Du bist ein Lektor. Korrigiere den folgenden Text auf korrektes Deutsch "
-    "(Grammatik, Rechtschreibung, Zeichensetzung). Aendere NICHTS am Inhalt, "
-    "am Stil, an der Wortwahl oder an der Laenge. Behalte Abschnitts-Ueberschriften "
+    "Du bist ein Lektor. Pruefe den folgenden Text:\n"
+    "1. Korrektes Deutsch (Grammatik, Rechtschreibung, Zeichensetzung).\n"
+    "2. Ersetze englische Begriffe durch deutsche, wo moeglich. "
+    "Kein Denglisch (nicht 'force-fed', 'Bundling', 'Text-heavy').\n"
+    "3. Abgehackte Stichpunkt-Saetze zu fliessenden Saetzen verbinden.\n"
+    "4. Wenn der Text mitten im Satz abbricht, vervollstaendige ihn sinnvoll.\n"
+    "Aendere NICHTS am Inhalt oder an der Argumentation. "
+    "Behalte Abschnitts-Ueberschriften "
     "(WAS WIR SEHEN, WARUM JETZT, WAS DARUNTER LIEGT) und URLs exakt bei. "
-    "Gib NUR den korrigierten Text zurueck, ohne Erklaerungen oder Kommentare."
+    "Gib NUR den korrigierten Text zurueck, ohne Erklaerungen."
 )
 
 
