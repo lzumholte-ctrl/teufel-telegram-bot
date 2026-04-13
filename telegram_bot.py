@@ -41,10 +41,10 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════
 
 MECHANISMS = {
-    "EXTRAKTION": {"color": "#C0392B", "symbol": "\u25BC", "label": "EXTRAKTION"},
-    "ERSETZUNG": {"color": "#2980B9", "symbol": "\u25C6", "label": "ERSETZUNG"},
-    "KOMMODIFIZIERUNG": {"color": "#D4A017", "symbol": "\u25A0", "label": "KOMMODIFIZIERUNG"},
-    "DOMESTIZIERUNG": {"color": "#27AE60", "symbol": "\u25CF", "label": "DOMESTIZIERUNG"},
+    "EXTRAKTION": {"color": "#C0392B", "label": "EXTRAKTION"},
+    "ERSETZUNG": {"color": "#2980B9", "label": "ERSETZUNG"},
+    "KOMMODIFIZIERUNG": {"color": "#D4A017", "label": "KOMMODIFIZIERUNG"},
+    "DOMESTIZIERUNG": {"color": "#27AE60", "label": "DOMESTIZIERUNG"},
 }
 DEFAULT_MECHANISM = "EXTRAKTION"
 
@@ -87,7 +87,6 @@ POST_HEIGHT = 1350
 MARGIN_X = 90
 CONTENT_WIDTH = POST_WIDTH - 2 * MARGIN_X
 SERIES_TITLE = "WARUM JETZT?"
-BAR_HEIGHT = 6
 
 
 def _load_font(role: str, size: int):
@@ -131,17 +130,13 @@ def _wrap_text(text: str, font, max_width: int, draw) -> list[str]:
 
 
 def _draw_header(draw, mechanism_key, title_font, label_font):
-    """Zeichnet den Header: farbige Bar + Serientitel + Mechanismus-Label.
+    """Zeichnet den Header auf farbigem Hintergrund: Serientitel + Mechanismus.
     Returns y-Position nach dem Header."""
     mech = MECHANISMS[mechanism_key]
-    color = mech["color"]
 
-    # Farbige Bar oben
-    draw.rectangle([(0, 0), (POST_WIDTH, BAR_HEIGHT)], fill=color)
+    y = 80
 
-    y = BAR_HEIGHT + 40
-
-    # Serientitel: "WARUM JETZT?" getrackt, grau
+    # Serientitel: "WARUM JETZT?" getrackt, weiss halbtransparent
     tracking = 6
     char_widths = []
     for c in SERIES_TITLE:
@@ -150,26 +145,20 @@ def _draw_header(draw, mechanism_key, title_font, label_font):
     total_w = sum(char_widths) + tracking * (len(SERIES_TITLE) - 1)
     tx = (POST_WIDTH - total_w) // 2
     for c, cw in zip(SERIES_TITLE, char_widths):
-        draw.text((tx, y), c, fill="#888888", font=title_font)
+        draw.text((tx, y), c, fill="#FFFFFF", font=title_font)
         tx += cw + tracking
 
-    y += 40
+    y += 45
 
-    # Mechanismus-Label mit Symbol, in Mechanismus-Farbe
-    label_text = f"{mech['symbol']}  {mech['label']}"
+    # Mechanismus-Label, weiss
+    label_text = mech["label"]
     bb = draw.textbbox((0, 0), label_text, font=label_font)
     lw = bb[2] - bb[0]
     lx = (POST_WIDTH - lw) // 2
-    draw.text((lx, y), label_text, fill=color, font=label_font)
+    draw.text((lx, y), label_text, fill="#FFFFFF", font=label_font)
 
     y += 55
     return y
-
-
-def _draw_footer(draw, mechanism_key):
-    """Zeichnet die farbige Bar unten."""
-    color = MECHANISMS[mechanism_key]["color"]
-    draw.rectangle([(0, POST_HEIGHT - BAR_HEIGHT), (POST_WIDTH, POST_HEIGHT)], fill=color)
 
 
 def _export_jpeg(img):
@@ -180,25 +169,25 @@ def _export_jpeg(img):
 
 
 def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key: str) -> list[bytes]:
-    """Erzeugt Carousel-Slides mit Mechanismus-Branding.
+    """Erzeugt Carousel-Slides. Komplett in Mechanismus-Farbe, weisse Schrift.
     Slide 1: Screenshot. Slide 2+: Take-Text."""
 
+    bg_color = MECHANISMS[mechanism_key]["color"]
     title_font = _load_font("title", 18)
-    label_font = _load_font("label", 26)
+    label_font = _load_font("label", 24)
     body_font = _load_font("body", 36)
 
     # ========== SLIDE 1: Screenshot ==========
     screenshot = Image.open(io.BytesIO(screenshot_bytes)).convert("RGB")
 
-    slide1 = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
+    slide1 = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), bg_color)
     d1 = ImageDraw.Draw(slide1)
 
     header_bottom = _draw_header(d1, mechanism_key, title_font, label_font)
-    _draw_footer(d1, mechanism_key)
 
     # Screenshot so gross wie moeglich
     img_area_top = header_bottom + 20
-    img_area_bottom = POST_HEIGHT - BAR_HEIGHT - 30
+    img_area_bottom = POST_HEIGHT - 60
     max_img_h = img_area_bottom - img_area_top
     max_img_w = CONTENT_WIDTH
 
@@ -219,10 +208,8 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
     body_lines = _wrap_text(image_text, body_font, CONTENT_WIDTH, tmp_draw)
     line_height = 56
 
-    # Header-Hoehe fuer Text-Slides berechnen
-    # (muss nochmal gezeichnet werden, also gleiche Hoehe wie oben)
-    text_area_top = header_bottom + 30
-    text_area_bottom = POST_HEIGHT - BAR_HEIGHT - 40
+    text_area_top = header_bottom + 20
+    text_area_bottom = POST_HEIGHT - 60
     available_h = text_area_bottom - text_area_top
     lines_per_slide = max(1, available_h // line_height)
 
@@ -230,28 +217,22 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
     for i in range(0, len(body_lines), lines_per_slide):
         text_slides_data.append(body_lines[i:i + lines_per_slide])
 
-    mech_color = MECHANISMS[mechanism_key]["color"]
     text_slides = []
     for chunk in text_slides_data:
-        slide = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
+        slide = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), bg_color)
         d = ImageDraw.Draw(slide)
 
         h_bottom = _draw_header(d, mechanism_key, title_font, label_font)
-        _draw_footer(d, mechanism_key)
 
-        # Separator in Mechanismus-Farbe
-        sep_y = h_bottom + 5
-        d.line([(MARGIN_X, sep_y), (POST_WIDTH - MARGIN_X, sep_y)], fill=mech_color, width=1)
-
-        # Text vertikal zentriert
-        t_top = sep_y + 25
-        t_bottom = POST_HEIGHT - BAR_HEIGHT - 40
+        # Text vertikal zentriert, weiss
+        t_top = h_bottom + 20
+        t_bottom = POST_HEIGHT - 60
         block_h = len(chunk) * line_height
         text_y = t_top + (t_bottom - t_top - block_h) // 2
         text_y = max(text_y, t_top)
 
         for line in chunk:
-            d.text((MARGIN_X, text_y), line, fill="#1a1a1a", font=body_font)
+            d.text((MARGIN_X, text_y), line, fill="#FFFFFF", font=body_font)
             text_y += line_height
 
         text_slides.append(_export_jpeg(slide))
@@ -337,7 +318,7 @@ PROTOKOLL:
 
 0. SEHEN: Bevor du denkst, sieh hin. Was ist da? Beschreibe was du SIEHST. Nicht was du interpretierst.
 
-0.5. RECHERCHE: IMMER. Nutze die Web-Suche bevor du analysierst. Was ist der Kontext? Stimmt was der Screenshot zeigt? Wer sind die Beteiligten? Gibt es eine Debatte? Mindestens 2 Suchanfragen. Wenn Ergebnisse deiner Annahme widersprechen: die Ergebnisse gewinnen, nicht deine Annahme.
+0.5. RECHERCHE: IMMER. Nutze die Web-Suche bevor du analysierst. GRUENDLICH. Nicht nur das Offensichtliche recherchieren. Wenn im Bild ein Produkt, eine App, eine Firma, eine Person vorkommt: Such JEDES davon einzeln. Wenn ein Screenshot einen Post zeigt, such den Post UND den Kontext drumherum. Wenn eine App gezeigt wird, such die App UND was sie tut UND wer dahintersteckt. Mindestens 3 verschiedene Suchanfragen. Ergebnisse LESEN, nicht nur Ueberschriften. Wenn Ergebnisse deiner Annahme widersprechen: die Ergebnisse gewinnen.
 
 1. DIE FRAGE: Warum passiert das gerade jetzt? Die Antwort muss SPEZIFISCH sein. Wenn du "KI" durch "Internet" oder "Kapitalismus" ersetzen koenntest, ist sie zu unspezifisch.
 
@@ -434,7 +415,7 @@ def _call_claude(client: anthropic.Anthropic, messages: list, system: str = None
 
     # Web-Suche als Server-Tool
     try:
-        kwargs["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}]
+        kwargs["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 10}]
         response = client.messages.create(**kwargs)
     except Exception as e:
         logger.warning(f"Web-Search nicht verfuegbar, Fallback: {e}")
