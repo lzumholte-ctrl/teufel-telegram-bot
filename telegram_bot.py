@@ -48,6 +48,61 @@ MECHANISMS = {
 }
 DEFAULT_MECHANISM = "EXTRAKTION"
 
+# Theoretische Texte pro Mechanismus — Schluessel fuer KB-Suche
+MECHANISM_THEORY = {
+    "EXTRAKTION": [
+        "federici", "tsing", "reynolds", "halpern", "colonial",
+        "salvage", "akkumulation", "rohmaterial", "enteignung",
+    ],
+    "ERSETZUNG": [
+        "sherman", "halpern", "cybernetic", "pickering", "automation",
+        "operator", "sycophancy", "denison", "whisper", "trivialisierung",
+    ],
+    "KOMMODIFIZIERUNG": [
+        "veblen", "bourdieu", "reckwitz", "kreativitaet",
+        "shorin", "authenticity", "diminishing_marginal",
+        "khole", "normcore", "youth_mode", "report_on_doubt",
+        "umami", "nemesis", "max_pain", "doom_report",
+        "brand_after_vibes", "creative_recession", "emily_in_berlin",
+        "dena_yago", "content_industrial", "pussy_capital",
+        "illouz", "ngai", "taste",
+    ],
+    "DOMESTIZIERUNG": [
+        "russell", "glitch", "nagle", "tiqqun", "young_girl",
+        "estes", "cohen_monster", "kristeva", "jung",
+        "archetyp", "domestizierung", "sycophancy",
+    ],
+}
+
+# Begriffe die IMMER relevante Theorie triggern
+THEME_KEYWORDS = {
+    "authentisch": ["shorin", "authenticity", "normcore", "khole"],
+    "echt": ["shorin", "authenticity", "normcore"],
+    "real": ["shorin", "authenticity", "normcore"],
+    "geschmack": ["veblen", "taste", "reckwitz", "umami", "bourdieu"],
+    "taste": ["veblen", "taste", "reckwitz", "umami", "bourdieu"],
+    "kuratier": ["obrist", "martinon", "curatorial"],
+    "handwerk": ["reckwitz", "ingold", "veblen"],
+    "analog": ["shorin", "normcore", "khole", "doom_report"],
+    "care": ["illouz", "emotional_labor", "graeber"],
+    "empathie": ["illouz", "emotional_labor", "sycophancy"],
+    "kreativ": ["reckwitz", "kreativitaet", "creative_recession"],
+    "content": ["content_industrial", "dena_yago", "nemesis", "pussy_capital"],
+    "influenc": ["nemesis", "content_industrial", "brand_after_vibes"],
+    "nostalgi": ["reynolds", "retromania", "shorin", "normcore"],
+    "vibes": ["nemesis", "brand_after_vibes", "umami"],
+    "marke": ["nemesis", "brand_after_vibes", "balenciaga", "goop"],
+    "brand": ["nemesis", "brand_after_vibes", "balenciaga"],
+    "erschoepf": ["doom_report", "max_pain", "diminishing_marginal", "creative_recession"],
+    "muede": ["doom_report", "max_pain", "diminishing_marginal"],
+    "krise": ["doom_report", "max_pain", "fisher"],
+    "sonnenschein": ["shorin", "normcore", "khole"],
+    "natur": ["shorin", "normcore", "merchant"],
+    "aestheti": ["ngai", "umami", "diminishing_marginal", "adorno", "foster"],
+    "cute": ["ngai", "pussy_capital"],
+    "beauty": ["ngai", "pussy_capital", "dena_yago"],
+}
+
 
 def _extract_mechanism(text: str) -> tuple[str, str]:
     """Extrahiert den Mechanismus-Tag aus dem Text.
@@ -257,6 +312,56 @@ def search_kb(docs: dict[str, str], query: str, max_results: int = 6) -> str:
     return "\n".join(context_parts)
 
 
+def search_kb_by_mechanism(docs: dict[str, str], mechanism: str,
+                           analysis_text: str, max_results: int = 8) -> str:
+    """Sucht KB-Dokumente anhand des erkannten Mechanismus UND der Analyse.
+    Viel praeziser als reine Caption-Suche."""
+    search_terms = set()
+
+    # 1. Mechanismus-spezifische Theorie-Begriffe
+    mech_terms = MECHANISM_THEORY.get(mechanism, [])
+    search_terms.update(mech_terms)
+
+    # 2. Themen-Keywords aus der Analyse extrahieren
+    analysis_lower = analysis_text.lower()
+    for keyword, theory_terms in THEME_KEYWORDS.items():
+        if keyword in analysis_lower:
+            search_terms.update(theory_terms)
+
+    if not search_terms:
+        return ""
+
+    # Dokumente scoren
+    scored = []
+    for path, content in docs.items():
+        content_lower = content.lower()
+        title_lower = os.path.basename(path).lower()
+        # GENEALOGIE und SKILL ueberspringen (zu gross, schon im Prompt-Wissen)
+        if "GENEALOGIE" in path or "SKILL" in path:
+            continue
+        score = 0
+        for term in search_terms:
+            if term in title_lower:
+                score += 15
+            score += min(content_lower.count(term), 10)
+        if score > 0:
+            scored.append((score, path, content))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    context_parts = []
+    total = 0
+    for _, path, content in scored[:max_results]:
+        chunk = content[:6000]
+        if total + len(chunk) > 30000:
+            break
+        context_parts.append(f"\n--- {path} ---\n{chunk}")
+        total += len(chunk)
+
+    logger.info(f"KB-Suche [{mechanism}]: {len(context_parts)} Dokumente gefunden "
+                f"(Terms: {', '.join(list(search_terms)[:8])}...)")
+    return "\n".join(context_parts)
+
+
 # ═══════════════════════════════════════════
 # SYSTEM-PROMPT
 # ═══════════════════════════════════════════
@@ -390,8 +495,9 @@ async def _proofread(text: str, client: anthropic.Anthropic) -> str:
 # CLAUDE API CALL MIT WEB-SUCHE
 # ═══════════════════════════════════════════
 
-def _call_claude(client: anthropic.Anthropic, messages: list, system: str = None) -> str:
-    """Ruft Claude mit Web-Suche auf. Extrahiert Text aus der Antwort."""
+def _call_claude(client: anthropic.Anthropic, messages: list,
+                  system: str = None, web_search: bool = True) -> str:
+    """Ruft Claude auf. Web-Suche nur beim Haupt-Call."""
     if system is None:
         system = SYSTEM_PROMPT
 
@@ -402,13 +508,16 @@ def _call_claude(client: anthropic.Anthropic, messages: list, system: str = None
         messages=messages,
     )
 
-    # Web-Suche als Server-Tool
-    try:
-        kwargs["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}]
-        response = client.messages.create(**kwargs)
-    except Exception as e:
-        logger.warning(f"Web-Search nicht verfuegbar, Fallback: {e}")
-        kwargs.pop("tools", None)
+    # Web-Suche nur beim Haupt-Call
+    if web_search:
+        try:
+            kwargs["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}]
+            response = client.messages.create(**kwargs)
+        except Exception as e:
+            logger.warning(f"Web-Search nicht verfuegbar, Fallback: {e}")
+            kwargs.pop("tools", None)
+            response = client.messages.create(**kwargs)
+    else:
         response = client.messages.create(**kwargs)
 
     # Text aus allen Content-Blocks extrahieren
@@ -423,11 +532,53 @@ def _call_claude(client: anthropic.Anthropic, messages: list, system: str = None
 # PIPELINE: Analyse -> Mechanismus -> Proofread
 # ═══════════════════════════════════════════
 
-async def _analyze(client: anthropic.Anthropic, messages: list) -> tuple[str, str]:
-    """Fuehrt die komplette Analyse-Pipeline aus.
+SHARPEN_PROMPT = (
+    "Du bist Lillys Denkmaschine. Du bekommst eine erste Analyse und "
+    "theoretisches Material aus der Wissensdatenbank. "
+    "SCHAERFE die Analyse mit der Theorie. Nicht dekorativ zitieren, "
+    "sondern die Theorie als DENKWERKZEUG nutzen. "
+    "Wenn Shorin ueber Post-Authentizitaet schreibt, dann ZEIG wie das "
+    "Phaenomen genau diesen Mechanismus ausfuehrt. "
+    "Wenn Nemesis ueber Umami schreibt, dann ZEIG wo die aesthetische "
+    "Oekonomie hier greift.\n\n"
+    "Behalte die Struktur: WAS WIR SEHEN / WARUM JETZT / WAS DARUNTER LIEGT.\n"
+    "Behalte die Laenge: Maximal 3 kurze Absaetze.\n"
+    "KEIN Hedging, KEIN Lehrbuchton, KEIN Denglisch.\n"
+    "Sag KI, nicht AI.\n"
+    "Quellen mit URLs am Ende beibehalten.\n"
+    "LETZTE ZEILE: Der Mechanismus-Tag [EXTRAKTION]/[ERSETZUNG]/"
+    "[KOMMODIFIZIERUNG]/[DOMESTIZIERUNG]."
+)
+
+
+async def _analyze(client: anthropic.Anthropic, messages: list,
+                   kb: dict = None) -> tuple[str, str]:
+    """Dreistufige Analyse-Pipeline:
+    1. Erst-Analyse (Claude + Web-Suche)
+    2. KB-Anreicherung (Theorie zum erkannten Mechanismus)
+    3. Schaerfung + Proofread
     Returns (proofread_text, mechanism_key)."""
+
+    # Schritt 1: Erst-Analyse
     raw = _call_claude(client, messages)
     clean_text, mechanism = _extract_mechanism(raw)
+
+    # Schritt 2: KB-Anreicherung
+    if kb:
+        kb_context = search_kb_by_mechanism(kb, mechanism, clean_text)
+        if kb_context:
+            logger.info(f"KB-Anreicherung mit {len(kb_context)} Zeichen Theorie")
+            # Schritt 2b: Schaerfung mit Theorie
+            sharpen_msg = [{"role": "user", "content": (
+                f"ERSTE ANALYSE:\n{clean_text}\n\n"
+                f"--- THEORETISCHES MATERIAL ---\n{kb_context}\n"
+                f"--- ENDE MATERIAL ---\n\n"
+                f"Schaerfe die Analyse mit diesem Material."
+            )}]
+            sharpened = _call_claude(client, sharpen_msg, system=SHARPEN_PROMPT, web_search=False)
+            clean_text, mechanism = _extract_mechanism(sharpened)
+
+    # Schritt 3: Proofread
     proofread_text = await _proofread(clean_text, client)
     return proofread_text, mechanism
 
@@ -507,7 +658,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client: anthropic.Anthropic = context.bot_data["client"]
 
     try:
-        answer, mechanism = await _analyze(client, messages)
+        answer, mechanism = await _analyze(client, messages, kb=context.bot_data.get("kb", {}))
     except Exception as e:
         logger.error(f"API-Fehler: {e}")
         answer = f"Fehler bei der Analyse: {e}"
@@ -568,7 +719,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client: anthropic.Anthropic = context.bot_data["client"]
 
     try:
-        answer, mechanism = await _analyze(client, messages)
+        answer, mechanism = await _analyze(client, messages, kb=context.bot_data.get("kb", {}))
     except Exception as e:
         logger.error(f"API-Fehler: {e}")
         answer = f"Fehler bei der Analyse: {e}"
@@ -662,7 +813,7 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
     client: anthropic.Anthropic = context.bot_data["client"]
 
     try:
-        answer, mechanism = await _analyze(client, messages)
+        answer, mechanism = await _analyze(client, messages, kb=context.bot_data.get("kb", {}))
     except Exception as e:
         logger.error(f"API-Fehler bei Media-Group: {e}")
         await message.reply_text(f"Fehler bei der Analyse: {e}")
@@ -715,7 +866,7 @@ async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TY
     client: anthropic.Anthropic = context.bot_data["client"]
 
     try:
-        answer, mechanism = await _analyze(client, messages)
+        answer, mechanism = await _analyze(client, messages, kb=context.bot_data.get("kb", {}))
     except Exception as e:
         logger.error(f"API-Fehler: {e}")
         await update.message.reply_text(f"Fehler bei der Analyse: {e}")
