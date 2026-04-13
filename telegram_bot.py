@@ -191,13 +191,13 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
     wm_text = MECHANISMS[mechanism_key]["label"].upper()
 
     def _draw_watermark(draw):
-        """Zeichnet das Mechanismus-Wort gross, am unteren Rand abgeschnitten."""
+        """Zeichnet das Mechanismus-Wort gross, rechts unten, komplett sichtbar."""
         bb = draw.textbbox((0, 0), wm_text, font=watermark_font)
         wm_w = bb[2] - bb[0]
         wm_h = bb[3] - bb[1]
-        # Rechts ausgerichtet, unten rausragend (40% abgeschnitten)
+        # Rechts ausgerichtet, oberhalb des unteren Rands
         wx = POST_WIDTH - MARGIN_X - wm_w
-        wy = POST_HEIGHT - int(wm_h * 0.55)
+        wy = POST_HEIGHT - wm_h - 50
         draw.text((wx, wy), wm_text, fill=wm_color, font=watermark_font)
 
     _draw_watermark(d1)
