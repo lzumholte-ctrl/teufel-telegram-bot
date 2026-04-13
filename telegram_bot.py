@@ -625,12 +625,13 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
         text_prompt = (
             f"{caption}\n\n"
             f"(Du bekommst {len(images)} Bilder. "
-            f"Bild 1 ist der POST, den du analysierst. "
-            f"Alle weiteren Bilder sind KONTEXT: Kommentare, Reaktionen, "
-            f"zusaetzliche Screenshots. Analysiere den POST. "
-            f"Die Kommentare liest du still mit als Stimmungsmaterial, "
+            f"Unterscheide selbst: Was sind POST-SLIDES (der eigentliche Content, "
+            f"Carousel-Bilder, zusammengehoerende Slides) und was sind "
+            f"KOMMENTAR-SCREENSHOTS (Instagram-Kommentare, Reaktionen)? "
+            f"Analysiere die POST-SLIDES. "
+            f"Kommentare liest du still mit als Stimmungsmaterial, "
             f"aber du zitierst sie nie und nennst keine Namen. "
-            f"Gib EINEN Take zum Post.)"
+            f"Gib EINEN Take.)"
         )
     if kb_context:
         text_prompt += (
