@@ -183,6 +183,15 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
     for i in range(0, len(body_lines), lines_per_slide):
         text_slides_data.append(body_lines[i:i + lines_per_slide])
 
+    tag_font = _load_font("body", 14)
+    mech_color = MECHANISMS[mechanism_key]["color"]
+    tag_text = MECHANISMS[mechanism_key]["label"].lower()
+
+    # Tag auf Screenshot-Slide
+    bb = d1.textbbox((0, 0), tag_text, font=tag_font)
+    tag_w = bb[2] - bb[0]
+    d1.text((POST_WIDTH - MARGIN_X - tag_w, POST_HEIGHT - 45), tag_text, fill=mech_color, font=tag_font)
+
     text_slides = []
     for chunk in text_slides_data:
         slide = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
@@ -196,6 +205,9 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
         for line in chunk:
             d.text((MARGIN_X, text_y), line, fill="#1a1a1a", font=body_font)
             text_y += line_height
+
+        # Kategorie-Tag unten rechts
+        d.text((POST_WIDTH - MARGIN_X - tag_w, POST_HEIGHT - 45), tag_text, fill=mech_color, font=tag_font)
 
         text_slides.append(_export_jpeg(slide))
 
