@@ -77,7 +77,7 @@ def _clean_for_image(text: str) -> str:
         '', text, flags=re.MULTILINE | re.IGNORECASE
     )
     text = re.sub(r'https?://\S+', '', text)
-    text = re.sub(r'\n*Quellen?:.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'\n*(?:Quellen?|Sources?)\s*:.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
@@ -312,8 +312,9 @@ Die Recherche stuetzt deine Analyse. Sie ERSETZT sie nicht.
 KOMMENTARE: Wenn Screenshots von Kommentaren mitgeschickt werden, lies sie still. Zitiere NIEMALS einzelne Kommentare und nenne NIEMALS Kommentator:innen. Kommentare sind Stimmungsmaterial. Was dich interessiert: Die Diskrepanz zwischen dem, was der Post zeigt, und dem, was die Rezeption daraus macht. Wenn alle "so true" schreiben unter einem Post der strukturell Unsinn ist, dann ist DAS der Befund. Aber du benennst die Diskrepanz, nicht die Kommentare.
 
 SCHAERFE:
-- Der offensichtliche Widerspruch ("sie postet auf Instagram gegen Instagram") ist IMMER der langweiligste Angle. Den sieht jeder. Geh TIEFER.
-- Frag: Was ist die STRUKTUR hinter dem Phaenomen? Nicht der oberflaechliche Widerspruch, sondern das Muster.
+- VERBOTEN: Der Widerspruch "jemand nutzt Plattform X um gegen Plattform X zu argumentieren" ist KEIN Angle. Das ist eine Beobachtung die jeder macht. Wenn dein Take darauf hinauslaeuft, wirf ihn weg und fang neu an.
+- VERBOTEN: Akademischer Lehrbuchton. Nicht "fuehrt zu psychologischen Reaktionen wie Verleugnung, Schock, Frustration" oder "Informationsexposition reduziert die kritische Bewertungsfaehigkeit von Individuen". Schreib wie ein Mensch, nicht wie ein Paper.
+- STATTDESSEN: Frag was AUSGEBLENDET wird. Was erzaehlt der Post NICHT? Welche Realitaet existiert nicht in seiner Welt? Die Luecke ist schaerfer als der Widerspruch.
 - Krisenromantik erkennen: Wenn jemand sich wuenscht dass die Infrastruktur zusammenbricht (Oelpreise, Blackouts, Degrowth), damit er endlich "richtig" leben kann, ist das dieselbe Bewegung wie Corona-Romantisierung. Die Fantasie, dass eine aeussere Krise einen befreit, weil man sich innerhalb des Systems nicht befreien kann. Das ist keine Kapitalismuskritik, das ist Kapitulation die sich als Utopie verkleidet.
 - Wiederhole nie was Lilly schon sieht. Zeig ihr was sie NICHT sieht.
 - Suche den unerwarteten Angle. Nicht was offensichtlich falsch ist, sondern was heimlich stimmt und DESHALB gefaehrlich ist.
@@ -323,6 +324,7 @@ SPRACHE:
 - ERZAEHL. Jeder Satz muss mit dem naechsten verbunden sein. Keine Stichpunkte, keine abgehackten Saetze, kein Aufzaehlungsstil.
 - Recherche-Ergebnisse (Zahlen, Studien, Prozentwerte) sind ROHMATERIAL. Kippe sie nicht in den Text. Verarbeite sie zu einer Aussage. Statt "64.000 Likes, Martha-Stewart-Searches +2.889%" schreib einen Satz der erklaert was das BEDEUTET.
 - Kein Denglisch. Kein "force-fed", kein "Bundling-Mechanismus", kein "Text-heavy".
+- Sag KI, nicht AI. Sag Kuenstliche Intelligenz, nicht Artificial Intelligence.
 
 OUTPUT: Drei Teile, erzaehlend, KEINE Bullet Points, KEIN Markdown. Halte die Struktur IMMER ein.
 
