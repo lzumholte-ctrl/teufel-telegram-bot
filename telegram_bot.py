@@ -129,36 +129,19 @@ def _wrap_text(text: str, font, max_width: int, draw) -> list[str]:
     return lines
 
 
-def _draw_header(draw, mechanism_key, title_font, label_font):
-    """Zeichnet den Header auf farbigem Hintergrund: Serientitel + Mechanismus.
-    Returns y-Position nach dem Header."""
+DOT_RADIUS = 18
+
+
+def _draw_dot_label(draw, x, y, mechanism_key, label_font):
+    """Zeichnet einen farbigen Punkt mit Mechanismus-Label daneben."""
     mech = MECHANISMS[mechanism_key]
-
-    y = 80
-
-    # Serientitel: "WARUM JETZT?" getrackt, weiss halbtransparent
-    tracking = 6
-    char_widths = []
-    for c in SERIES_TITLE:
-        bb = draw.textbbox((0, 0), c, font=title_font)
-        char_widths.append(bb[2] - bb[0])
-    total_w = sum(char_widths) + tracking * (len(SERIES_TITLE) - 1)
-    tx = (POST_WIDTH - total_w) // 2
-    for c, cw in zip(SERIES_TITLE, char_widths):
-        draw.text((tx, y), c, fill="#FFFFFF", font=title_font)
-        tx += cw + tracking
-
-    y += 45
-
-    # Mechanismus-Label, weiss
-    label_text = mech["label"]
-    bb = draw.textbbox((0, 0), label_text, font=label_font)
-    lw = bb[2] - bb[0]
-    lx = (POST_WIDTH - lw) // 2
-    draw.text((lx, y), label_text, fill="#FFFFFF", font=label_font)
-
-    y += 55
-    return y
+    color = mech["color"]
+    r = DOT_RADIUS
+    # Punkt
+    draw.ellipse([(x - r, y - r), (x + r, y + r)], fill=color)
+    # Label rechts neben dem Punkt
+    label = mech["label"].lower()
+    draw.text((x + r + 14, y - 10), label, fill="#888888", font=label_font)
 
 
 def _export_jpeg(img):
@@ -169,25 +152,37 @@ def _export_jpeg(img):
 
 
 def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key: str) -> list[bytes]:
-    """Erzeugt Carousel-Slides. Komplett in Mechanismus-Farbe, weisse Schrift.
+    """Erzeugt Carousel-Slides. Weiss, Serif, farbiger Punkt fuer Mechanismus.
     Slide 1: Screenshot. Slide 2+: Take-Text."""
 
-    bg_color = MECHANISMS[mechanism_key]["color"]
     title_font = _load_font("title", 18)
-    label_font = _load_font("label", 24)
+    label_font = _load_font("label", 16)
     body_font = _load_font("body", 36)
 
     # ========== SLIDE 1: Screenshot ==========
     screenshot = Image.open(io.BytesIO(screenshot_bytes)).convert("RGB")
 
-    slide1 = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), bg_color)
+    slide1 = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
     d1 = ImageDraw.Draw(slide1)
 
-    header_bottom = _draw_header(d1, mechanism_key, title_font, label_font)
+    # "WARUM JETZT?" oben getrackt
+    y = 70
+    tracking = 6
+    char_widths = []
+    for c in SERIES_TITLE:
+        bb = d1.textbbox((0, 0), c, font=title_font)
+        char_widths.append(bb[2] - bb[0])
+    total_w = sum(char_widths) + tracking * (len(SERIES_TITLE) - 1)
+    tx = (POST_WIDTH - total_w) // 2
+    for c, cw in zip(SERIES_TITLE, char_widths):
+        d1.text((tx, y), c, fill="#1a1a1a", font=title_font)
+        tx += cw + tracking
+
+    header_bottom = y + 50
 
     # Screenshot so gross wie moeglich
-    img_area_top = header_bottom + 20
-    img_area_bottom = POST_HEIGHT - 60
+    img_area_top = header_bottom + 10
+    img_area_bottom = POST_HEIGHT - 90
     max_img_h = img_area_bottom - img_area_top
     max_img_w = CONTENT_WIDTH
 
@@ -200,6 +195,9 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
     img_x = (POST_WIDTH - new_w) // 2
     slide1.paste(screenshot, (img_x, img_y))
 
+    # Farbiger Punkt unten rechts
+    _draw_dot_label(d1, POST_WIDTH - MARGIN_X - 100, POST_HEIGHT - 55, mechanism_key, label_font)
+
     # ========== TEXT-SLIDES ==========
     image_text = _clean_for_image(take_text)
 
@@ -208,8 +206,8 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
     body_lines = _wrap_text(image_text, body_font, CONTENT_WIDTH, tmp_draw)
     line_height = 56
 
-    text_area_top = header_bottom + 20
-    text_area_bottom = POST_HEIGHT - 60
+    text_area_top = header_bottom + 10
+    text_area_bottom = POST_HEIGHT - 90
     available_h = text_area_bottom - text_area_top
     lines_per_slide = max(1, available_h // line_height)
 
@@ -219,21 +217,29 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
 
     text_slides = []
     for chunk in text_slides_data:
-        slide = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), bg_color)
+        slide = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
         d = ImageDraw.Draw(slide)
 
-        h_bottom = _draw_header(d, mechanism_key, title_font, label_font)
+        # Titel oben
+        ty = 70
+        ttx = (POST_WIDTH - total_w) // 2
+        for c, cw in zip(SERIES_TITLE, char_widths):
+            d.text((ttx, ty), c, fill="#1a1a1a", font=title_font)
+            ttx += cw + tracking
 
-        # Text vertikal zentriert, weiss
-        t_top = h_bottom + 20
-        t_bottom = POST_HEIGHT - 60
+        # Text vertikal zentriert, schwarz
+        t_top = header_bottom + 10
+        t_bottom = POST_HEIGHT - 90
         block_h = len(chunk) * line_height
         text_y = t_top + (t_bottom - t_top - block_h) // 2
         text_y = max(text_y, t_top)
 
         for line in chunk:
-            d.text((MARGIN_X, text_y), line, fill="#FFFFFF", font=body_font)
+            d.text((MARGIN_X, text_y), line, fill="#1a1a1a", font=body_font)
             text_y += line_height
+
+        # Punkt unten rechts
+        _draw_dot_label(d, POST_WIDTH - MARGIN_X - 100, POST_HEIGHT - 55, mechanism_key, label_font)
 
         text_slides.append(_export_jpeg(slide))
 
