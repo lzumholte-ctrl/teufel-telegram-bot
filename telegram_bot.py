@@ -183,19 +183,32 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
     for i in range(0, len(body_lines), lines_per_slide):
         text_slides_data.append(body_lines[i:i + lines_per_slide])
 
-    tag_font = _load_font("body", 14)
-    mech_color = MECHANISMS[mechanism_key]["color"]
-    tag_text = MECHANISMS[mechanism_key]["label"].lower()
+    # Grosses Wasserzeichen-Wort: Mechanismus in riesiger Serif, sehr hell
+    watermark_font = _load_font("title", 130)
+    mech_color_rgb = tuple(int(MECHANISMS[mechanism_key]["color"].lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
+    # 12% Opacity auf Weiss
+    wm_color = tuple(int(255 - 0.12 * (255 - c)) for c in mech_color_rgb)
+    wm_text = MECHANISMS[mechanism_key]["label"].upper()
 
-    # Tag auf Screenshot-Slide
-    bb = d1.textbbox((0, 0), tag_text, font=tag_font)
-    tag_w = bb[2] - bb[0]
-    d1.text((POST_WIDTH - MARGIN_X - tag_w, POST_HEIGHT - 45), tag_text, fill=mech_color, font=tag_font)
+    def _draw_watermark(draw):
+        """Zeichnet das Mechanismus-Wort gross, am unteren Rand abgeschnitten."""
+        bb = draw.textbbox((0, 0), wm_text, font=watermark_font)
+        wm_w = bb[2] - bb[0]
+        wm_h = bb[3] - bb[1]
+        # Rechts ausgerichtet, unten rausragend (40% abgeschnitten)
+        wx = POST_WIDTH - MARGIN_X - wm_w
+        wy = POST_HEIGHT - int(wm_h * 0.55)
+        draw.text((wx, wy), wm_text, fill=wm_color, font=watermark_font)
+
+    _draw_watermark(d1)
 
     text_slides = []
     for chunk in text_slides_data:
         slide = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
         d = ImageDraw.Draw(slide)
+
+        # Wasserzeichen zuerst (hinter dem Text)
+        _draw_watermark(d)
 
         # Text vertikal zentriert
         block_h = len(chunk) * line_height
@@ -205,9 +218,6 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
         for line in chunk:
             d.text((MARGIN_X, text_y), line, fill="#1a1a1a", font=body_font)
             text_y += line_height
-
-        # Kategorie-Tag unten rechts
-        d.text((POST_WIDTH - MARGIN_X - tag_w, POST_HEIGHT - 45), tag_text, fill=mech_color, font=tag_font)
 
         text_slides.append(_export_jpeg(slide))
 
