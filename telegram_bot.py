@@ -619,11 +619,19 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
             "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64},
         })
 
-    text_prompt = (
-        f"{caption}\n\n"
-        f"(Das sind {len(images)} Slides/Bilder aus einem Post. "
-        f"Lies sie als Einheit und gib EINEN Take.)"
-    )
+    if len(images) == 1:
+        text_prompt = caption
+    else:
+        text_prompt = (
+            f"{caption}\n\n"
+            f"(Du bekommst {len(images)} Bilder. "
+            f"Bild 1 ist der POST, den du analysierst. "
+            f"Alle weiteren Bilder sind KONTEXT: Kommentare, Reaktionen, "
+            f"zusaetzliche Screenshots. Analysiere den POST. "
+            f"Die Kommentare liest du still mit als Stimmungsmaterial, "
+            f"aber du zitierst sie nie und nennst keine Namen. "
+            f"Gib EINEN Take zum Post.)"
+        )
     if kb_context:
         text_prompt += (
             f"\n\n--- WISSENSDATENBANK ---\n{kb_context}\n--- ENDE WISSENSDATENBANK ---"
