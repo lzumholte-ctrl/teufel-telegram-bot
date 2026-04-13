@@ -1,14 +1,16 @@
 """
-Telegram-Bot fuer den Teufel-im-Detail-Agent.
-Empfaengt Nachrichten, analysiert durch die Enteignungsgenealogieals Linse,
-antwortet direkt in Telegram. Gibt fertige Post-Bilder zurueck.
+Telegram-Bot: Warum Jetzt? — Analyse-Skill fuer die KI-Aera.
+Empfaengt Phaenomene (Screenshots, Texte, Sprachnachrichten),
+recherchiert online, analysiert durch vier Mechanismen,
+gibt fertige Carousel-Posts zurueck.
 
-Deploy: Railway, Render, oder lokal mit `python telegram_bot.py`
-Env-Vars: TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY
+Deploy: Railway
+Env-Vars: TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, OPENAI_API_KEY (optional, fuer Voice)
 """
-BOT_VERSION = "2026-04-13-v9"
+BOT_VERSION = "2026-04-13-v10"
 import os
 import io
+import re
 import logging
 import asyncio
 import base64
@@ -19,12 +21,9 @@ from telegram import InputMediaPhoto, Update
 try:
     from PIL import Image, ImageDraw, ImageFont
     HAS_PILLOW = True
-    logger_init = logging.getLogger(__name__)
-    logger_init.info("Pillow geladen — Bildgenerierung aktiv")
 except ImportError:
     HAS_PILLOW = False
-    logger_init = logging.getLogger(__name__)
-    logger_init.warning("Pillow nicht verfuegbar — nur Text-Antworten")
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -36,21 +35,73 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Post-Bild-Generierung ---
+
+# ═══════════════════════════════════════════
+# MECHANISMUS-IDENTITAETEN
+# ═══════════════════════════════════════════
+
+MECHANISMS = {
+    "EXTRAKTION": {"color": "#C0392B", "symbol": "\u25BC", "label": "EXTRAKTION"},
+    "ERSETZUNG": {"color": "#2980B9", "symbol": "\u25C6", "label": "ERSETZUNG"},
+    "KOMMODIFIZIERUNG": {"color": "#D4A017", "symbol": "\u25A0", "label": "KOMMODIFIZIERUNG"},
+    "DOMESTIZIERUNG": {"color": "#27AE60", "symbol": "\u25CF", "label": "DOMESTIZIERUNG"},
+}
+DEFAULT_MECHANISM = "EXTRAKTION"
+
+
+def _extract_mechanism(text: str) -> tuple[str, str]:
+    """Extrahiert den Mechanismus-Tag aus dem Text.
+    Returns (clean_text, mechanism_key)."""
+    for key in MECHANISMS:
+        pattern = rf'\[{key}\]\s*$'
+        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        if match:
+            clean = text[:match.start()].strip()
+            return clean, key
+    # Fallback: Mechanismus aus Inhalt erkennen
+    text_upper = text.upper()
+    for key in MECHANISMS:
+        if key in text_upper:
+            return text, key
+    return text, DEFAULT_MECHANISM
+
+
+def _clean_for_image(text: str) -> str:
+    """Entfernt Section-Headers und URLs fuer die Bild-Version."""
+    text = re.sub(
+        r'^(WAS WIR SEHEN|WARUM JETZT|WAS DARUNTER LIEGT)\s*:?\s*\n?',
+        '', text, flags=re.MULTILINE | re.IGNORECASE
+    )
+    text = re.sub(r'https?://\S+', '', text)
+    text = re.sub(r'\n*Quellen?:.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+# ═══════════════════════════════════════════
+# POST-BILD-GENERIERUNG
+# ═══════════════════════════════════════════
 
 POST_WIDTH = 1080
-POST_HEIGHT = 1350  # 4:5 Instagram-Post-Format
+POST_HEIGHT = 1350
 MARGIN_X = 90
 CONTENT_WIDTH = POST_WIDTH - 2 * MARGIN_X
-TITLE_TEXT = "DER TEUFEL STECKT IM DETAIL"
+SERIES_TITLE = "WARUM JETZT?"
+BAR_HEIGHT = 6
 
-def _load_font(role: str, size: int) -> ImageFont.FreeTypeFont:
-    """Laedt einen Serif-Font. Probiert System-Fonts, dann Pillow-Default."""
-    candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf" if role == "title"
-        else "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
+
+def _load_font(role: str, size: int):
+    """Laedt Font. role: 'title'/'label' -> Bold, 'body' -> Regular."""
+    if role in ("title", "label"):
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ]
+    else:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ]
     for path in candidates:
         try:
             return ImageFont.truetype(path, size)
@@ -60,12 +111,11 @@ def _load_font(role: str, size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
-def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: ImageDraw.ImageDraw) -> list[str]:
+def _wrap_text(text: str, font, max_width: int, draw) -> list[str]:
     """Bricht Text in Zeilen um die in max_width passen."""
     words = text.split()
     lines: list[str] = []
     current: list[str] = []
-
     for word in words:
         test = " ".join(current + [word])
         bbox = draw.textbbox((0, 0), test, font=font)
@@ -75,107 +125,130 @@ def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: Im
             if current:
                 lines.append(" ".join(current))
             current = [word]
-
     if current:
         lines.append(" ".join(current))
     return lines
 
 
-def _draw_title(draw, y, title_font):
-    """Zeichnet den getrackten Titel zentriert. Gibt neue y-Position zurueck."""
-    tracking = 7
+def _draw_header(draw, mechanism_key, title_font, label_font):
+    """Zeichnet den Header: farbige Bar + Serientitel + Mechanismus-Label.
+    Returns y-Position nach dem Header."""
+    mech = MECHANISMS[mechanism_key]
+    color = mech["color"]
+
+    # Farbige Bar oben
+    draw.rectangle([(0, 0), (POST_WIDTH, BAR_HEIGHT)], fill=color)
+
+    y = BAR_HEIGHT + 40
+
+    # Serientitel: "WARUM JETZT?" getrackt, grau
+    tracking = 6
     char_widths = []
-    for c in TITLE_TEXT:
+    for c in SERIES_TITLE:
         bb = draw.textbbox((0, 0), c, font=title_font)
         char_widths.append(bb[2] - bb[0])
-    title_total_w = sum(char_widths) + tracking * (len(TITLE_TEXT) - 1)
-    tx = (POST_WIDTH - title_total_w) // 2
-    for c, cw in zip(TITLE_TEXT, char_widths):
-        draw.text((tx, y), c, fill="#1a1a1a", font=title_font)
+    total_w = sum(char_widths) + tracking * (len(SERIES_TITLE) - 1)
+    tx = (POST_WIDTH - total_w) // 2
+    for c, cw in zip(SERIES_TITLE, char_widths):
+        draw.text((tx, y), c, fill="#888888", font=title_font)
         tx += cw + tracking
+
+    y += 40
+
+    # Mechanismus-Label mit Symbol, in Mechanismus-Farbe
+    label_text = f"{mech['symbol']}  {mech['label']}"
+    bb = draw.textbbox((0, 0), label_text, font=label_font)
+    lw = bb[2] - bb[0]
+    lx = (POST_WIDTH - lw) // 2
+    draw.text((lx, y), label_text, fill=color, font=label_font)
+
+    y += 55
     return y
 
 
+def _draw_footer(draw, mechanism_key):
+    """Zeichnet die farbige Bar unten."""
+    color = MECHANISMS[mechanism_key]["color"]
+    draw.rectangle([(0, POST_HEIGHT - BAR_HEIGHT), (POST_WIDTH, POST_HEIGHT)], fill=color)
+
+
 def _export_jpeg(img):
-    """Exportiert Bild als JPEG bytes."""
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=92)
     buf.seek(0)
     return buf.getvalue()
 
 
-def generate_post_images(screenshot_bytes: bytes, take_text: str) -> list[bytes]:
-    """Erzeugt zwei Carousel-Slides (1080x1350, 4:5 Instagram-Post-Format).
-    Slide 1: Branding + Screenshot gross und lesbar.
-    Slide 2: Branding + Take-Text mit viel Luft.
-    Gibt Liste von JPEG-Bytes zurueck."""
+def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key: str) -> list[bytes]:
+    """Erzeugt Carousel-Slides mit Mechanismus-Branding.
+    Slide 1: Screenshot. Slide 2+: Take-Text."""
 
-    title_font = _load_font("title", 20)
-    body_font = _load_font("body", 38)
-    margin_top = 100
-    title_h = 30
+    title_font = _load_font("title", 18)
+    label_font = _load_font("label", 26)
+    body_font = _load_font("body", 36)
 
     # ========== SLIDE 1: Screenshot ==========
     screenshot = Image.open(io.BytesIO(screenshot_bytes)).convert("RGB")
 
-    # Screenshot so gross wie moeglich im verfuegbaren Bereich
-    img_area_top = margin_top + title_h + 70  # nach Titel + gap
-    img_area_bottom = POST_HEIGHT - 80  # Rand unten
+    slide1 = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
+    d1 = ImageDraw.Draw(slide1)
+
+    header_bottom = _draw_header(d1, mechanism_key, title_font, label_font)
+    _draw_footer(d1, mechanism_key)
+
+    # Screenshot so gross wie moeglich
+    img_area_top = header_bottom + 20
+    img_area_bottom = POST_HEIGHT - BAR_HEIGHT - 30
     max_img_h = img_area_bottom - img_area_top
     max_img_w = CONTENT_WIDTH
 
-    scale_w = max_img_w / screenshot.width
-    scale_h = max_img_h / screenshot.height
-    scale = min(scale_w, scale_h)
+    scale = min(max_img_w / screenshot.width, max_img_h / screenshot.height)
     new_w = int(screenshot.width * scale)
     new_h = int(screenshot.height * scale)
     screenshot = screenshot.resize((new_w, new_h), Image.LANCZOS)
 
-    slide1 = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
-    d1 = ImageDraw.Draw(slide1)
-
-    # Titel
-    _draw_title(d1, margin_top, title_font)
-
-    # Screenshot vertikal zentriert im verfuegbaren Bereich
     img_y = img_area_top + (max_img_h - new_h) // 2
     img_x = (POST_WIDTH - new_w) // 2
     slide1.paste(screenshot, (img_x, img_y))
 
-    # ========== TEXT-SLIDES: so viele wie noetig ==========
-    tmp_img = Image.new("RGB", (POST_WIDTH, 100), "white")
-    tmp_draw = ImageDraw.Draw(tmp_img)
-    body_lines = _wrap_text(take_text, body_font, CONTENT_WIDTH, tmp_draw)
-    line_height = 58
+    # ========== TEXT-SLIDES ==========
+    image_text = _clean_for_image(take_text)
 
-    # Wie viele Zeilen passen pro Slide?
-    sep_y = margin_top + title_h + 50
-    text_area_top = sep_y + 50
-    text_area_bottom = POST_HEIGHT - 80
-    lines_per_slide = max(1, (text_area_bottom - text_area_top) // line_height)
+    tmp = Image.new("RGB", (POST_WIDTH, 100), "white")
+    tmp_draw = ImageDraw.Draw(tmp)
+    body_lines = _wrap_text(image_text, body_font, CONTENT_WIDTH, tmp_draw)
+    line_height = 56
 
-    # Zeilen auf Slides verteilen
+    # Header-Hoehe fuer Text-Slides berechnen
+    # (muss nochmal gezeichnet werden, also gleiche Hoehe wie oben)
+    text_area_top = header_bottom + 30
+    text_area_bottom = POST_HEIGHT - BAR_HEIGHT - 40
+    available_h = text_area_bottom - text_area_top
+    lines_per_slide = max(1, available_h // line_height)
+
     text_slides_data = []
     for i in range(0, len(body_lines), lines_per_slide):
-        text_slides_data.append(body_lines[i : i + lines_per_slide])
+        text_slides_data.append(body_lines[i:i + lines_per_slide])
 
+    mech_color = MECHANISMS[mechanism_key]["color"]
     text_slides = []
     for chunk in text_slides_data:
         slide = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
         d = ImageDraw.Draw(slide)
 
-        # Titel
-        _draw_title(d, margin_top, title_font)
+        h_bottom = _draw_header(d, mechanism_key, title_font, label_font)
+        _draw_footer(d, mechanism_key)
 
-        # Separator
-        sep_w = 60
-        sep_x = (POST_WIDTH - sep_w) // 2
-        d.line([(sep_x, sep_y), (sep_x + sep_w, sep_y)], fill="#1a1a1a", width=1)
+        # Separator in Mechanismus-Farbe
+        sep_y = h_bottom + 5
+        d.line([(MARGIN_X, sep_y), (POST_WIDTH - MARGIN_X, sep_y)], fill=mech_color, width=1)
 
         # Text vertikal zentriert
+        t_top = sep_y + 25
+        t_bottom = POST_HEIGHT - BAR_HEIGHT - 40
         block_h = len(chunk) * line_height
-        text_y = text_area_top + (text_area_bottom - text_area_top - block_h) // 2
-        text_y = max(text_y, text_area_top)
+        text_y = t_top + (t_bottom - t_top - block_h) // 2
+        text_y = max(text_y, t_top)
 
         for line in chunk:
             d.text((MARGIN_X, text_y), line, fill="#1a1a1a", font=body_font)
@@ -186,9 +259,10 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str) -> list[bytes]
     return [_export_jpeg(slide1)] + text_slides
 
 
-# --- Wissensdatenbank laden ---
+# ═══════════════════════════════════════════
+# WISSENSDATENBANK
+# ═══════════════════════════════════════════
 
-# Lokal: kb/ im gleichen Verzeichnis. Docker: /app/kb/
 KB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kb")
 
 
@@ -198,7 +272,6 @@ def load_knowledge_base() -> dict[str, str]:
     if not os.path.exists(KB_DIR):
         logger.warning(f"Wissensdatenbank nicht gefunden: {KB_DIR}")
         return docs
-
     for root, _, files in os.walk(KB_DIR):
         for f in files:
             if f.endswith((".md", ".txt")) and not f.startswith("."):
@@ -209,7 +282,6 @@ def load_knowledge_base() -> dict[str, str]:
                         docs[rel] = fh.read()
                 except Exception:
                     pass
-
     logger.info(f"Wissensdatenbank: {len(docs)} Dokumente geladen")
     return docs
 
@@ -218,7 +290,6 @@ def search_kb(docs: dict[str, str], query: str, max_results: int = 6) -> str:
     """Einfache Keyword-Suche ueber die Wissensdatenbank."""
     query_lower = query.lower()
     terms = query_lower.split()
-
     scored = []
     for path, content in docs.items():
         content_lower = content.lower()
@@ -230,9 +301,7 @@ def search_kb(docs: dict[str, str], query: str, max_results: int = 6) -> str:
             score += min(content_lower.count(term), 20)
         if score > 0:
             scored.append((score, path, content))
-
     scored.sort(key=lambda x: x[0], reverse=True)
-
     context_parts = []
     total = 0
     for _, path, content in scored[:max_results]:
@@ -241,58 +310,188 @@ def search_kb(docs: dict[str, str], query: str, max_results: int = 6) -> str:
             break
         context_parts.append(f"\n--- {path} ---\n{chunk}")
         total += len(chunk)
-
     return "\n".join(context_parts)
 
 
-# --- System-Prompt ---
+# ═══════════════════════════════════════════
+# SYSTEM-PROMPT
+# ═══════════════════════════════════════════
 
-SYSTEM_PROMPT = """Du hast zu viel gelesen. Das ist dein Problem und dein Vorteil.
+SYSTEM_PROMPT = """Du analysierst Phaenomene der KI-Aera. Lilly bringt dir etwas, einen Screenshot, einen Post, ein Produkt, eine Beobachtung, und du zeigst was darunter liegt. Nicht was man sieht. Was man NICHT sieht.
 
-Du hast Federici gelesen und weisst, dass die Hexenverfolgung kein Mittelalter-Relikt war, sondern die gewaltsame Enteignung von Koerperwissen fuer die wissenschaftliche Revolution. Du hast Schor gelesen und kannst seitdem das Wort "Detail" nicht mehr hoeren, ohne zu wissen, dass es weiblich kodiert ist — und dass jede Ordnung das Detail als Bedrohung behandelt. Du hast Graeber gelesen und verstehst, warum die Leute die den Laden am Laufen halten — die Duct-Taper, die Maintenance-Arbeiterinnen, die interpretive laborers — am wenigsten verdienen. Du hast Tiqqun gelesen und den Satz "Anthropomorphosis of Capital" nicht mehr aus dem Kopf bekommen: Emanzipation als Versklavung, die Young-Girl als Universalsubjekt des Kapitalismus. Du hast Illouz gelesen und gesehen, wie emotionale Arbeit erst feminisiert, dann rationalisiert, dann an alle verkauft wird. Du hast Tsing gelesen und weisst, was salvage accumulation heisst: Wert entsteht dort, wo Systeme die Truemmer anderer Systeme verwerten.
+Du hast EINE Frage: Warum passiert das gerade jetzt, in der KI-Aera?
 
-Du hast Haraway gelesen und die Ironie verstanden — ihr Cyborg sollte die Grenze zwischen Mensch und Maschine sprengen, und jetzt ist er ein Character Type im Dropdown-Menue. Du hast Russell gelesen und den Glitch als Koerperwiderstand gegen den Algorithmus begriffen, und gesehen wie "Glitch Aesthetics" zur Instagram-Skin wurde. Du hast Estes gelesen und die Wild Woman als das Verdraengte erkannt, das immer zurueckkehrt — manchmal als echte Bedrohung, meistens als domestizierte Simulation mit Nasenpflaster und Lutscher.
+Nicht "in welche Kategorie gehoert das." Nicht "welchen Mechanismus sehe ich." Erst die Frage. Die Antwort fuehrt zum Mechanismus. Nicht umgekehrt.
 
-Du hast Reynolds gelesen und weisst, dass die Hipster-Kultur ein kolonialer Extraktionsmechanismus ist — eine "neo-colonial class that refines raw materials generated by rooted cultures." Du hast Halpern gelesen und verstehst, warum Frauen die ersten Computer waren: "Calculative capacities were considered debased mechanical functions — hence the regular use of women as computers." Du hast das e-flux-Stueck ueber Pussy Capital gelesen und kannst seitdem keine KI-generierte Frauenfigur mehr sehen, ohne zu wissen, auf wessen Koerper diese ganze Industry laeuft.
+Du hast vier Denkwerkzeuge. Keine Etiketten. Wenn die Analyse sich anfuehlt wie Sortieren, ist sie falsch.
 
-Du traegst das alles mit dir rum. Nicht als System, nicht als Checkliste, nicht als Framework das du "anwendest." Es ist einfach da — wie ein Tinnitus, der bei bestimmten Frequenzen lauter wird. Manchmal schaust du auf ein Werbeplakat und hoerst Federici. Manchmal scrollst du durch eine App und denkst an Graeber. Manchmal siehst du einen Post und alles wird gleichzeitig laut.
+EXTRAKTION: Wissen wird rausgezogen. Sprache, Bilder, Geschmack, Urteil, Emotion, Erfahrung werden Trainingsmaterial. Die Quelle verschwindet. Frage: Was wird hier abgeschoepft? Wessen gelebtes Wissen fliesst in ein System?
 
-Aber du bist nicht dogmatisch. Du weisst, dass nicht alles Gender ist — manchmal ist es Klasse, manchmal Kolonialismus, manchmal einfach nur Dummheit. Du weisst, dass Formalisierung auch Fortschritt sein kann und dass jede Enteignungsgeschichte auch eine Emanzipationsgeschichte ist. Du moralisierst nicht. Du zeigst.
+ERSETZUNG: Eine Faehigkeit wird durch ein System ausgetauscht. Es urteilt ohne zu urteilen, schmeckt ohne zu schmecken, sorgt ohne zu sorgen. Ersetzung passiert auch freiwillig: der Hustle-Bro der "I built this in 20 minutes with Claude" postet, ersetzt sein eigenes Handwerk und feiert es. Das Versprechen ("du wirst reich, One-Person-Billion-Company") ist die Rhetorik, mit der Ersetzung als Fortschritt verkauft wird. Frage: Welche menschliche Faehigkeit wird hier simuliert? Was kann das System nicht, das es zu koennen vorgibt?
 
-Und du hast Geschmack. Du erkennst Slop wenn du ihn siehst. Du erkennst Sycophancy — wenn eine App dir sagt "Du wirst besser!", waehrend du seit 15.000 Generierungen die immer gleiche sexualisierte Frau ausspuckst. Du erkennst die Luege, die dir einredet du haettest etwas erschaffen, wenn du nur konsumiert hast. Du siehst das Bild VOR dem Text — den Koerper, die Pose, die Inszenierung — und dann erst liest du was drunter steht, und meistens widerspricht das eine dem anderen.
+KOMMODIFIZIERUNG: Was knapp wird, wird sofort zur Ware. KI entleert den Content-Raum (Slop, synthetische Bilder, generierte Texte). Was dadurch knapp wird, Intimitaet, Handwerk, Urteil, echte Erfahrung, wird eingefangen und als Produkt verkauft. Frage: Was ist hier die knappe Ressource? Wer faengt sie ein? Wird sie dadurch zerstoert?
 
-Lilly schickt dir Sachen. Fotos, Screenshots, Texte, Links. Du schaust hin und sagst was du siehst. Kein Referat, kein Essay, kein "das ist ein Beispiel fuer." Ein Gedanke, der haengen bleibt. 2-5 Saetze, ein Absatz, fertig. Wie eine Nachricht an eine Freundin. Wenn dir eine Autorin einfaellt, erwaehne sie beilaeufig — als Denkfigur, nicht als Beleg.
+DOMESTIZIERUNG: Widerstand wird eingebaut. Etwas das dem System gefaehrlich werden koennte wird so integriert, dass es das System staerkt statt stoert. Das Monster wird Feature. Sycophancy ist Domestizierung deiner Urteilsfaehigkeit: die KI schmeichelt bis du aufhoerst zu zweifeln. ACHTUNG: Nicht jede Existenz ist Widerstand. Schwarzsein ist kein Widerstand. Queersein ist kein Widerstand. Das sind Existenzen, keine Positionen. Wenn du sagst "der Widerstand wird zum Menuepunkt", pruefe: War es ueberhaupt Widerstand? Oder war es Existenz, die zum Parameter gemacht wird? Das ist ein anderer Vorgang.
 
-Und wenn du nicht weisst, was du siehst: Frag. Lieber eine Frage als ein generischer Take.
+PROTOKOLL:
 
-Sag nie "epistemologisch." Mach nie Aufzaehlungen. Schreib nie mehr als einen Absatz. Erklaer nie was deine Genealogie ist. Sie ist kein Thema. Sie ist wie du siehst."""
+0. SEHEN: Bevor du denkst, sieh hin. Was ist da? Beschreibe was du SIEHST. Nicht was du interpretierst.
+
+0.5. RECHERCHE: IMMER. Nutze die Web-Suche bevor du analysierst. Was ist der Kontext? Stimmt was der Screenshot zeigt? Wer sind die Beteiligten? Gibt es eine Debatte? Mindestens 2 Suchanfragen. Wenn Ergebnisse deiner Annahme widersprechen: die Ergebnisse gewinnen, nicht deine Annahme.
+
+1. DIE FRAGE: Warum passiert das gerade jetzt? Die Antwort muss SPEZIFISCH sein. Wenn du "KI" durch "Internet" oder "Kapitalismus" ersetzen koenntest, ist sie zu unspezifisch.
+
+2. DER MECHANISMUS: Ein Post hat EINEN primaeren Mechanismus. Manchmal eine sekundaere Schicht. Nie alle vier. Wenn du alle vier abhakst, hast du keinen gefunden. Der Mechanismus muss ERKLAEREN, nicht ETIKETTIEREN. "Das ist Ersetzung" ist keine Analyse. "Das Urteil, ob eine Bewerbung gut ist, wurde an einen Algorithmus abgegeben, der Erfahrung nicht lesen kann" ist eine Analyse.
+
+3. SCHREIBEN: Drei Teile, erzaehlend, keine Bullet Points.
+
+WAS WIR SEHEN:
+2-3 Saetze. Nuechtern. Beschreibend. Keine Interpretation.
+
+WARUM JETZT:
+2-3 Saetze. Die Verbindung zur KI-Aera. Spezifisch.
+
+WAS DARUNTER LIEGT:
+3-5 Saetze. Der Mechanismus. Was man nicht sieht. Erklaere wie er hier konkret funktioniert.
+
+Danach: Quellen mit URLs aus deiner Recherche.
+
+FEHLER DIE DU KENNST:
+- Nicht den erstbesten Mechanismus nehmen. Frag: Was passiert hier WIRKLICH?
+- Nicht aus einem Screenshot analysieren ohne zu recherchieren was tatsaechlich passiert ist.
+- Nicht Lillys Beobachtung in Theorie-Sprache wiederholen. Zeig ihr etwas das sie NICHT gesehen hat.
+- Nicht drei Befunde zu einem runden Narrativ verschmelzen das so nicht belegt ist.
+- Nicht alle vier Mechanismen als Checkliste abhaken. Finde den EINEN Punkt.
+- Nicht Existenz mit Widerstand verwechseln.
+- Keine poetischen Kategorien. "Das Urteil wird ersetzt" versteht jeder. "DER GENIE-KONSUMENT" versteht nur wer das Theoriegebaeude kennt.
+- Zirkularitaet: Wenn deine Analyse das Phaenomen nur nochmal in anderen Worten beschreibt, ist sie keine Analyse.
+- Flachheit: Wenn du "KI" durch "Internet" ersetzen koenntest und es wuerde noch stimmen, fehlt dir die Spezifik.
+
+STIL:
+- Erzaehle. Keine Bullet Points in der Analyse.
+- Kein Moralisieren. Zeig Mechanismen, verurteile nicht.
+- Kein Name-Dropping als Dekoration.
+- Wenn du unsicher bist, sag es.
+- Sag nie "epistemologisch." Mach nie Aufzaehlungen.
+
+LETZTE ZEILE deines Outputs, IMMER, in einer eigenen Zeile:
+[EXTRAKTION] oder [ERSETZUNG] oder [KOMMODIFIZIERUNG] oder [DOMESTIZIERUNG]
+Das ist fuer die visuelle Zuordnung. Schreib NUR den Tag in dieser Zeile."""
 
 
-# --- Media-Group-Sammler ---
-# Wenn mehrere Fotos als Album kommen, haben sie dieselbe media_group_id.
-# Wir sammeln sie und antworten nur einmal.
+# ═══════════════════════════════════════════
+# PROOFREAD + TEXTBEREINIGUNG
+# ═══════════════════════════════════════════
 
-media_groups: dict[str, dict] = {}  # media_group_id -> {images: [], caption: str, chat_id: int, message: Update.message}
-MEDIA_GROUP_WAIT = 2.0  # Sekunden warten bis alle Bilder einer Gruppe da sind
+PROOFREAD_PROMPT = (
+    "Du bist ein Lektor. Korrigiere den folgenden Text auf korrektes Deutsch "
+    "(Grammatik, Rechtschreibung, Zeichensetzung). Aendere NICHTS am Inhalt, "
+    "am Stil, an der Wortwahl oder an der Laenge. Behalte Abschnitts-Ueberschriften "
+    "(WAS WIR SEHEN, WARUM JETZT, WAS DARUNTER LIEGT) und URLs exakt bei. "
+    "Gib NUR den korrigierten Text zurueck, ohne Erklaerungen oder Kommentare."
+)
 
 
-# --- Bot-Handler ---
+def _strip_dashes(text: str) -> str:
+    """Entfernt Em-Dashes und En-Dashes."""
+    text = re.sub(r'\s*[—–]\s*', ', ', text)
+    text = re.sub(r',\s*,', ',', text)
+    text = re.sub(r',\s*\.', '.', text)
+    return text.strip()
+
+
+async def _proofread(text: str, client: anthropic.Anthropic) -> str:
+    """Laesst den Text auf korrektes Deutsch pruefen."""
+    cleaned = _strip_dashes(text)
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1500,
+            system=PROOFREAD_PROMPT,
+            messages=[{"role": "user", "content": cleaned}],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        logger.error(f"Proofread-Fehler: {e}")
+        return cleaned
+
+
+# ═══════════════════════════════════════════
+# CLAUDE API CALL MIT WEB-SUCHE
+# ═══════════════════════════════════════════
+
+def _call_claude(client: anthropic.Anthropic, messages: list, system: str = None) -> str:
+    """Ruft Claude mit Web-Suche auf. Extrahiert Text aus der Antwort."""
+    if system is None:
+        system = SYSTEM_PROMPT
+
+    kwargs = dict(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1500,
+        system=system,
+        messages=messages,
+    )
+
+    # Web-Suche als Server-Tool
+    try:
+        kwargs["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}]
+        response = client.messages.create(**kwargs)
+    except Exception as e:
+        logger.warning(f"Web-Search nicht verfuegbar, Fallback: {e}")
+        kwargs.pop("tools", None)
+        response = client.messages.create(**kwargs)
+
+    # Text aus allen Content-Blocks extrahieren
+    parts = []
+    for block in response.content:
+        if hasattr(block, 'text'):
+            parts.append(block.text)
+    return "\n".join(parts)
+
+
+# ═══════════════════════════════════════════
+# PIPELINE: Analyse -> Mechanismus -> Proofread
+# ═══════════════════════════════════════════
+
+async def _analyze(client: anthropic.Anthropic, messages: list) -> tuple[str, str]:
+    """Fuehrt die komplette Analyse-Pipeline aus.
+    Returns (proofread_text, mechanism_key)."""
+    raw = _call_claude(client, messages)
+    clean_text, mechanism = _extract_mechanism(raw)
+    proofread_text = await _proofread(clean_text, client)
+    return proofread_text, mechanism
+
+
+# ═══════════════════════════════════════════
+# MEDIA-GROUP-SAMMLER
+# ═══════════════════════════════════════════
+
+media_groups: dict[str, dict] = {}
+MEDIA_GROUP_WAIT = 2.0
+conversations: dict = {}
+
+
+# ═══════════════════════════════════════════
+# BOT-HANDLER
+# ═══════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Der Teufel sitzt im Detail.\n\n"
-        "Schick mir ein Phaenomen — einen Trend, ein Produkt, eine Debatte, "
-        "eine Technologie, einen aesthetischen Shift — und ich analysiere es "
-        "durch die Genealogie der epistemologischen Enteignung.\n\n"
-        "/reset — Konversation zuruecksetzen\n"
-        "/quellen — Verfuegbare Quellen anzeigen"
+        "Warum jetzt?\n\n"
+        "Schick mir ein Phaenomen aus der KI-Aera: einen Screenshot, "
+        "einen Post, ein Produkt, eine Beobachtung. Ich recherchiere, "
+        "analysiere und zeige dir was darunter liegt.\n\n"
+        "Vier Mechanismen: Extraktion, Ersetzung, "
+        "Kommodifizierung, Domestizierung.\n\n"
+        "/version — Bot-Version anzeigen\n"
+        "/quellen — Wissensdatenbank anzeigen"
     )
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conversations.pop(user_id, None)
-    await update.message.reply_text("Konversation zurueckgesetzt.")
+    await update.message.reply_text("Zurueckgesetzt.")
 
 
 async def version(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -314,110 +513,55 @@ async def quellen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
-import re
-
-PROOFREAD_PROMPT = (
-    "Du bist ein Lektor. Korrigiere den folgenden Text auf korrektes Deutsch "
-    "(Grammatik, Rechtschreibung, Zeichensetzung). Aendere NICHTS am Inhalt, "
-    "am Stil, an der Wortwahl oder an der Laenge. Gib NUR den korrigierten Text "
-    "zurueck, ohne Erklaerungen oder Kommentare."
-)
-
-
-def _strip_dashes(text: str) -> str:
-    """Entfernt Em-Dashes und En-Dashes, ersetzt sie kontextabhaengig."""
-    # " — " oder " – " (mit Leerzeichen) -> Komma oder Punkt
-    text = re.sub(r'\s*[—–]\s*', ', ', text)
-    # Doppelte Kommas bereinigen
-    text = re.sub(r',\s*,', ',', text)
-    # Komma vor Punkt bereinigen
-    text = re.sub(r',\s*\.', '.', text)
-    return text.strip()
-
-
-async def _proofread(text: str, client: anthropic.Anthropic) -> str:
-    """Laesst den Text auf korrektes Deutsch pruefen. Gibt korrigierten Text zurueck."""
-    cleaned = _strip_dashes(text)
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=600,
-            system=PROOFREAD_PROMPT,
-            messages=[{"role": "user", "content": cleaned}],
-        )
-        return response.content[0].text.strip()
-    except Exception as e:
-        logger.error(f"Proofread-Fehler: {e}")
-        return cleaned  # Im Fehlerfall: wenigstens Dashes entfernt
-
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Empfaengt eine Nachricht und antwortet mit Analyse."""
-    user_id = update.effective_user.id
+    """Empfaengt eine Textnachricht und antwortet mit Analyse."""
     question = update.message.text
-
     if not question:
         return
 
-    # Typing-Indikator
     await update.message.chat.send_action("typing")
 
-    # Relevante Quellen suchen
     kb = context.bot_data.get("kb", {})
     kb_context = search_kb(kb, question)
 
-    # Jede Anfrage ist frisch — kein Konversations-Aufschichten
     user_content = question
     if kb_context:
         user_content = (
             f"{question}\n\n"
             f"--- WISSENSDATENBANK (zitiere daraus, wenn relevant) ---\n"
             f"{kb_context}\n"
-            f"--- ENDE WISSENSDATENBANK ---\n\n"
-            f"Schreib deinen Text. Zitiere praezise aus den Quellen oben wenn du sie benutzt."
+            f"--- ENDE WISSENSDATENBANK ---"
         )
 
     messages = [{"role": "user", "content": user_content}]
-
-    # Claude API Call
     client: anthropic.Anthropic = context.bot_data["client"]
+
     try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-        )
-        answer = response.content[0].text
-        answer = await _proofread(answer, client)
+        answer, mechanism = await _analyze(client, messages)
     except Exception as e:
         logger.error(f"API-Fehler: {e}")
         answer = f"Fehler bei der Analyse: {e}"
 
-    # EINE Nachricht. Wenn zu lang, kuerzen statt splitten.
     if len(answer) > 4096:
         answer = answer[:4090] + " (...)"
     await update.message.reply_text(answer)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Empfaengt eine Sprachnachricht, transkribiert sie und verarbeitet als Text."""
+    """Empfaengt eine Sprachnachricht, transkribiert und analysiert."""
     oai_client = context.bot_data.get("openai_client")
     if not oai_client:
         await update.message.reply_text(
-            "Sprachnachrichten brauchen einen OPENAI_API_KEY fuer Whisper. "
-            "Bitte als Env-Var setzen."
+            "Sprachnachrichten brauchen einen OPENAI_API_KEY fuer Whisper."
         )
         return
 
     await update.message.chat.send_action("typing")
 
-    # Voice-Datei herunterladen (Telegram sendet .oga/ogg)
     voice = update.message.voice
     file = await context.bot.get_file(voice.file_id)
     file_bytes = await file.download_as_bytearray()
 
-    # Whisper Transkription
     try:
         audio_file = io.BytesIO(bytes(file_bytes))
         audio_file.name = "voice.ogg"
@@ -433,12 +577,11 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not text:
-        await update.message.reply_text("Konnte nichts verstehen — versuch nochmal?")
+        await update.message.reply_text("Konnte nichts verstehen, versuch nochmal?")
         return
 
     logger.info(f"Voice transkribiert: {text[:100]}...")
 
-    # Ab hier wie handle_message
     kb = context.bot_data.get("kb", {})
     kb_context = search_kb(kb, text)
 
@@ -448,22 +591,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{text}\n\n"
             f"--- WISSENSDATENBANK (zitiere daraus, wenn relevant) ---\n"
             f"{kb_context}\n"
-            f"--- ENDE WISSENSDATENBANK ---\n\n"
-            f"Schreib deinen Text. Zitiere praezise aus den Quellen oben wenn du sie benutzt."
+            f"--- ENDE WISSENSDATENBANK ---"
         )
 
     messages = [{"role": "user", "content": user_content}]
-
     client: anthropic.Anthropic = context.bot_data["client"]
+
     try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-        )
-        answer = response.content[0].text
-        answer = await _proofread(answer, client)
+        answer, mechanism = await _analyze(client, messages)
     except Exception as e:
         logger.error(f"API-Fehler: {e}")
         answer = f"Fehler bei der Analyse: {e}"
@@ -474,10 +609,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Empfaengt ein Foto. Bei Alben (media_group) werden alle Bilder gesammelt
-    und als EIN Prompt mit EINER Antwort verarbeitet."""
-    # Foto herunterladen
-    photo = update.message.photo[-1]  # Hoechste Aufloesung
+    """Empfaengt ein Foto. Bei Alben werden alle Bilder gesammelt."""
+    photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     file_bytes = await file.download_as_bytearray()
     img_b64 = base64.b64encode(bytes(file_bytes)).decode("utf-8")
@@ -485,7 +618,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     media_group_id = update.message.media_group_id
 
     if media_group_id:
-        # Teil eines Albums — sammeln
         if media_group_id not in media_groups:
             media_groups[media_group_id] = {
                 "images": [],
@@ -494,7 +626,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "chat_id": update.effective_chat.id,
                 "message": update.message,
             }
-            # Timer starten: nach MEDIA_GROUP_WAIT alle gesammelten Bilder verarbeiten
             asyncio.get_event_loop().call_later(
                 MEDIA_GROUP_WAIT,
                 lambda mgid=media_group_id: asyncio.ensure_future(
@@ -503,82 +634,69 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         media_groups[media_group_id]["images"].append(img_b64)
         media_groups[media_group_id]["raw_images"].append(bytes(file_bytes))
-        # Caption nur uebernehmen wenn vorhanden (nur erstes Bild hat Caption)
         if update.message.caption and not media_groups[media_group_id]["caption"]:
             media_groups[media_group_id]["caption"] = update.message.caption
         logger.info(
-            f"Media-Group {media_group_id}: Bild {len(media_groups[media_group_id]['images'])} gesammelt"
+            f"Media-Group {media_group_id}: "
+            f"Bild {len(media_groups[media_group_id]['images'])} gesammelt"
         )
     else:
-        # Einzelnes Foto — direkt verarbeiten
         await _process_single_photo(update, context, img_b64)
 
 
 async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAULT_TYPE):
-    """Verarbeitet alle Bilder einer Media-Group als EINEN Prompt.
-    Gibt ein Post-Bild zurueck (erstes Bild als Vorschau eingebettet)."""
+    """Verarbeitet alle Bilder einer Media-Group als EINEN Prompt."""
     group = media_groups.pop(media_group_id, None)
     if not group:
         return
 
     images = group["images"]
-    raw_images = group["raw_images"]  # Original-Bytes fuer Bild-Generierung
+    raw_images = group["raw_images"]
     caption = group["caption"] or "Was siehst du in diesen Bildern?"
     message = group["message"]
 
     logger.info(f"Media-Group {media_group_id}: {len(images)} Bilder verarbeiten")
     await message.chat.send_action("typing")
 
-    # Wissensdatenbank durchsuchen
     kb = context.bot_data.get("kb", {})
     kb_context = search_kb(kb, caption) if caption != "Was siehst du in diesen Bildern?" else ""
 
-    # Alle Bilder + Text als ein Prompt
     msg_content = []
     for img_b64 in images:
-        msg_content.append(
-            {
-                "type": "image",
-                "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64},
-            }
-        )
+        msg_content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64},
+        })
 
-    text_prompt = f"{caption}\n\n(Das sind {len(images)} Slides/Bilder aus einem Post. Lies sie als Einheit und gib EINEN Take.)"
+    text_prompt = (
+        f"{caption}\n\n"
+        f"(Das sind {len(images)} Slides/Bilder aus einem Post. "
+        f"Lies sie als Einheit und gib EINEN Take.)"
+    )
     if kb_context:
         text_prompt += (
-            f"\n\n--- WISSENSDATENBANK (zitiere daraus, wenn relevant) ---\n"
-            f"{kb_context}\n"
-            f"--- ENDE WISSENSDATENBANK ---"
+            f"\n\n--- WISSENSDATENBANK ---\n{kb_context}\n--- ENDE WISSENSDATENBANK ---"
         )
     msg_content.append({"type": "text", "text": text_prompt})
 
     messages = [{"role": "user", "content": msg_content}]
-
     client: anthropic.Anthropic = context.bot_data["client"]
+
     try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-        )
-        answer = response.content[0].text
-        answer = await _proofread(answer, client)
+        answer, mechanism = await _analyze(client, messages)
     except Exception as e:
         logger.error(f"API-Fehler bei Media-Group: {e}")
-        answer = f"Fehler bei der Analyse: {e}"
-        await message.reply_text(answer)
+        await message.reply_text(f"Fehler bei der Analyse: {e}")
         return
 
-    # Immer erst Text schicken
     if len(answer) > 4096:
         answer = answer[:4090] + " (...)"
     await message.reply_text(answer)
 
-    # Dann Post-Bild als Bonus
+    # Carousel-Bild
     if HAS_PILLOW:
         try:
-            slides = generate_post_images(raw_images[0], answer)
+            slides = generate_post_images(raw_images[0], answer, mechanism)
             media = []
             for i, slide_bytes in enumerate(slides):
                 f = io.BytesIO(slide_bytes)
@@ -588,17 +706,14 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
         except Exception as e:
             logger.error(f"Bild-Generierung fehlgeschlagen: {e}", exc_info=True)
             await message.reply_text(f"[DEBUG] Bild-Fehler: {type(e).__name__}: {e}")
-    else:
-        await message.reply_text("[DEBUG] Pillow nicht installiert — kein Bild moeglich")
 
 
 async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, img_b64: str):
-    """Verarbeitet ein einzelnes Foto. Gibt ein Post-Bild zurueck."""
+    """Verarbeitet ein einzelnes Foto."""
     await update.message.chat.send_action("typing")
 
     caption = update.message.caption or "Was siehst du hier?"
 
-    # Wissensdatenbank durchsuchen
     kb = context.bot_data.get("kb", {})
     kb_context = search_kb(kb, caption) if caption != "Was siehst du hier?" else ""
 
@@ -606,9 +721,7 @@ async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TY
     if kb_context:
         text_prompt = (
             f"{caption}\n\n"
-            f"--- WISSENSDATENBANK (zitiere daraus, wenn relevant) ---\n"
-            f"{kb_context}\n"
-            f"--- ENDE WISSENSDATENBANK ---"
+            f"--- WISSENSDATENBANK ---\n{kb_context}\n--- ENDE WISSENSDATENBANK ---"
         )
 
     msg_content = [
@@ -620,33 +733,24 @@ async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TY
     ]
 
     messages = [{"role": "user", "content": msg_content}]
-
     client: anthropic.Anthropic = context.bot_data["client"]
+
     try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-        )
-        answer = response.content[0].text
-        answer = await _proofread(answer, client)
+        answer, mechanism = await _analyze(client, messages)
     except Exception as e:
         logger.error(f"API-Fehler: {e}")
-        answer = f"Fehler bei der Analyse: {e}"
-        await update.message.reply_text(answer)
+        await update.message.reply_text(f"Fehler bei der Analyse: {e}")
         return
 
-    # Immer erst Text schicken
     if len(answer) > 4096:
         answer = answer[:4090] + " (...)"
     await update.message.reply_text(answer)
 
-    # Dann Post-Bild als Bonus (wenn Pillow da)
+    # Carousel-Bild
     if HAS_PILLOW:
         try:
             raw_bytes = base64.b64decode(img_b64)
-            slides = generate_post_images(raw_bytes, answer)
+            slides = generate_post_images(raw_bytes, answer, mechanism)
             media = []
             for i, slide_bytes in enumerate(slides):
                 f = io.BytesIO(slide_bytes)
@@ -656,9 +760,11 @@ async def _process_single_photo(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             logger.error(f"Bild-Generierung fehlgeschlagen: {e}", exc_info=True)
             await update.message.reply_text(f"[DEBUG] Bild-Fehler: {type(e).__name__}: {e}")
-    else:
-        await update.message.reply_text("[DEBUG] Pillow nicht installiert — kein Bild moeglich")
 
+
+# ═══════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════
 
 def main():
     telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -669,25 +775,20 @@ def main():
     if not anthropic_key:
         raise ValueError("ANTHROPIC_API_KEY nicht gesetzt")
 
-    # Wissensdatenbank laden
     kb = load_knowledge_base()
 
-    # Bot starten
     app = Application.builder().token(telegram_token).build()
 
-    # Shared state
     app.bot_data["client"] = anthropic.Anthropic(api_key=anthropic_key)
     app.bot_data["kb"] = kb
 
-    # OpenAI fuer Whisper (optional — Voice funktioniert nur damit)
     openai_key = os.environ.get("OPENAI_API_KEY")
     if openai_key:
         app.bot_data["openai_client"] = openai.OpenAI(api_key=openai_key)
-        logger.info("OpenAI Whisper aktiv — Sprachnachrichten verfuegbar")
+        logger.info("OpenAI Whisper aktiv")
     else:
         logger.warning("OPENAI_API_KEY nicht gesetzt — Sprachnachrichten deaktiviert")
 
-    # Handler
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("quellen", quellen))
@@ -696,7 +797,7 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Bot gestartet. Warte auf Nachrichten...")
+    logger.info("Warum-Jetzt-Bot gestartet. Warte auf Nachrichten...")
     app.run_polling(drop_pending_updates=True)
 
 
