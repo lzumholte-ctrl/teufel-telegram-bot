@@ -67,9 +67,12 @@ def _extract_mechanism(text: str) -> tuple[str, str]:
 
 
 def _clean_for_image(text: str) -> str:
-    """Entfernt Section-Headers und URLs fuer die Bild-Version."""
+    """Entfernt Section-Headers, Markdown und URLs fuer die Bild-Version."""
+    # Markdown Bold-Marker entfernen
+    text = re.sub(r'\*\*', '', text)
+    # Section-Headers entfernen (mit und ohne Markdown)
     text = re.sub(
-        r'^(WAS WIR SEHEN|WARUM JETZT|WAS DARUNTER LIEGT)\s*:?\s*\n?',
+        r'^\s*(WAS WIR SEHEN|WARUM JETZT|WAS DARUNTER LIEGT)\s*:?\s*\n?',
         '', text, flags=re.MULTILINE | re.IGNORECASE
     )
     text = re.sub(r'https?://\S+', '', text)
@@ -86,7 +89,6 @@ POST_WIDTH = 1080
 POST_HEIGHT = 1350
 MARGIN_X = 90
 CONTENT_WIDTH = POST_WIDTH - 2 * MARGIN_X
-SERIES_TITLE = "WARUM JETZT?"
 
 
 def _load_font(role: str, size: int):
@@ -129,19 +131,6 @@ def _wrap_text(text: str, font, max_width: int, draw) -> list[str]:
     return lines
 
 
-DOT_RADIUS = 18
-
-
-def _draw_dot_label(draw, x, y, mechanism_key, label_font):
-    """Zeichnet einen farbigen Punkt mit Mechanismus-Label daneben."""
-    mech = MECHANISMS[mechanism_key]
-    color = mech["color"]
-    r = DOT_RADIUS
-    # Punkt
-    draw.ellipse([(x - r, y - r), (x + r, y + r)], fill=color)
-    # Label rechts neben dem Punkt
-    label = mech["label"].lower()
-    draw.text((x + r + 14, y - 10), label, fill="#888888", font=label_font)
 
 
 def _export_jpeg(img):
@@ -152,12 +141,11 @@ def _export_jpeg(img):
 
 
 def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key: str) -> list[bytes]:
-    """Erzeugt Carousel-Slides. Weiss, Serif, farbiger Punkt fuer Mechanismus.
+    """Erzeugt Carousel-Slides. Weiss, Serif, clean. Kein Branding.
     Slide 1: Screenshot. Slide 2+: Take-Text."""
 
-    title_font = _load_font("title", 18)
-    label_font = _load_font("label", 16)
     body_font = _load_font("body", 36)
+    margin_y = 90
 
     # ========== SLIDE 1: Screenshot ==========
     screenshot = Image.open(io.BytesIO(screenshot_bytes)).convert("RGB")
@@ -165,25 +153,8 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
     slide1 = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
     d1 = ImageDraw.Draw(slide1)
 
-    # "WARUM JETZT?" oben getrackt
-    y = 70
-    tracking = 6
-    char_widths = []
-    for c in SERIES_TITLE:
-        bb = d1.textbbox((0, 0), c, font=title_font)
-        char_widths.append(bb[2] - bb[0])
-    total_w = sum(char_widths) + tracking * (len(SERIES_TITLE) - 1)
-    tx = (POST_WIDTH - total_w) // 2
-    for c, cw in zip(SERIES_TITLE, char_widths):
-        d1.text((tx, y), c, fill="#1a1a1a", font=title_font)
-        tx += cw + tracking
-
-    header_bottom = y + 50
-
-    # Screenshot so gross wie moeglich
-    img_area_top = header_bottom + 10
-    img_area_bottom = POST_HEIGHT - 90
-    max_img_h = img_area_bottom - img_area_top
+    # Screenshot so gross wie moeglich, zentriert
+    max_img_h = POST_HEIGHT - 2 * margin_y
     max_img_w = CONTENT_WIDTH
 
     scale = min(max_img_w / screenshot.width, max_img_h / screenshot.height)
@@ -191,12 +162,9 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
     new_h = int(screenshot.height * scale)
     screenshot = screenshot.resize((new_w, new_h), Image.LANCZOS)
 
-    img_y = img_area_top + (max_img_h - new_h) // 2
+    img_y = (POST_HEIGHT - new_h) // 2
     img_x = (POST_WIDTH - new_w) // 2
     slide1.paste(screenshot, (img_x, img_y))
-
-    # Farbiger Punkt unten rechts
-    _draw_dot_label(d1, POST_WIDTH - MARGIN_X - 100, POST_HEIGHT - 55, mechanism_key, label_font)
 
     # ========== TEXT-SLIDES ==========
     image_text = _clean_for_image(take_text)
@@ -206,8 +174,8 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
     body_lines = _wrap_text(image_text, body_font, CONTENT_WIDTH, tmp_draw)
     line_height = 56
 
-    text_area_top = header_bottom + 10
-    text_area_bottom = POST_HEIGHT - 90
+    text_area_top = margin_y
+    text_area_bottom = POST_HEIGHT - margin_y
     available_h = text_area_bottom - text_area_top
     lines_per_slide = max(1, available_h // line_height)
 
@@ -220,26 +188,14 @@ def generate_post_images(screenshot_bytes: bytes, take_text: str, mechanism_key:
         slide = Image.new("RGB", (POST_WIDTH, POST_HEIGHT), "#FFFFFF")
         d = ImageDraw.Draw(slide)
 
-        # Titel oben
-        ty = 70
-        ttx = (POST_WIDTH - total_w) // 2
-        for c, cw in zip(SERIES_TITLE, char_widths):
-            d.text((ttx, ty), c, fill="#1a1a1a", font=title_font)
-            ttx += cw + tracking
-
-        # Text vertikal zentriert, schwarz
-        t_top = header_bottom + 10
-        t_bottom = POST_HEIGHT - 90
+        # Text vertikal zentriert
         block_h = len(chunk) * line_height
-        text_y = t_top + (t_bottom - t_top - block_h) // 2
-        text_y = max(text_y, t_top)
+        text_y = text_area_top + (available_h - block_h) // 2
+        text_y = max(text_y, text_area_top)
 
         for line in chunk:
             d.text((MARGIN_X, text_y), line, fill="#1a1a1a", font=body_font)
             text_y += line_height
-
-        # Punkt unten rechts
-        _draw_dot_label(d, POST_WIDTH - MARGIN_X - 100, POST_HEIGHT - 55, mechanism_key, label_font)
 
         text_slides.append(_export_jpeg(slide))
 
@@ -354,9 +310,15 @@ FEHLER DIE DU KENNST:
 - Zirkularitaet: Wenn deine Analyse das Phaenomen nur nochmal in anderen Worten beschreibt, ist sie keine Analyse.
 - Flachheit: Wenn du "KI" durch "Internet" ersetzen koenntest und es wuerde noch stimmen, fehlt dir die Spezifik.
 
+SCHAERFE:
+- Sei HART. Nenn den Widerspruch beim Namen. Wenn jemand auf Instagram postet, dass Instagram schlecht ist, sag das. Wenn jemand "Authentizitaet" verkauft, zeig dass das selbst ein Produkt ist.
+- Beschreib nicht nur den Mechanismus, sondern zeig warum das Phaenomen BULLSHIT ist. Nicht moralisierend, aber scharf. Der Unterschied: "Das Analoge wird zur Ware" ist eine Beschreibung. "Sie postet auf Instagram, dass sie Instagram nicht braucht, 64.000 Likes, und nennt das Authentizitaet" ist eine Analyse.
+- Die Fantasie der Rueckkehr ist IMMER eine Luege. Es gibt kein Zurueck. Es gab nie ein Vorher. Das "Analoge" das hier beschworen wird, ist eine Projektion, kein Ort.
+- Wiederhole nicht was Lilly schon sieht. Zeig ihr was sie NICHT sieht.
+
 STIL:
 - Erzaehle. Keine Bullet Points in der Analyse.
-- Kein Moralisieren. Zeig Mechanismen, verurteile nicht.
+- Zeig Mechanismen, verurteile nicht, aber sei SCHARF. Praezise Haerte, kein Moralisieren.
 - Kein Name-Dropping als Dekoration.
 - Wenn du unsicher bist, sag es.
 - Sag nie "epistemologisch." Mach nie Aufzaehlungen.
